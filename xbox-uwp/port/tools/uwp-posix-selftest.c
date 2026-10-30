@@ -72,7 +72,13 @@ int main(void) {
     pthread_t a, b;
     check(pthread_create(&a, NULL, lock_counter, &m) == 0, "pthread_create returns 0");
     check(pthread_create(&b, NULL, lock_counter, &m) == 0, "pthread_create (second thread)");
-    check(pthread_mutex_trylock(&m) == EBUSY || 1, "trylock never deadlocks the caller");
+    // trylock only reports EBUSY while somebody holds the lock - and if it is not released here,
+    // the two threads below block forever in join. (This cost a cancelled CI run to learn.)
+    pthread_mutex_lock(&m);
+    check(pthread_mutex_trylock(&m) == EBUSY, "trylock on a held mutex returns EBUSY");
+    pthread_mutex_unlock(&m);
+    check(pthread_mutex_trylock(&m) == 0, "trylock on a free mutex succeeds");
+    pthread_mutex_unlock(&m);
     pthread_join(a, NULL);
     pthread_join(b, NULL);
     pthread_mutex_destroy(&m);
