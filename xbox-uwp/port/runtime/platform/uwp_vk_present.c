@@ -262,14 +262,17 @@ void uwp_vk_present_extent(UwpVkPresent *p, uint32_t *width, uint32_t *height) {
 
 bool uwp_vk_present_begin(UwpVkPresent *p) {
     if (!p || p->held_by_vulkan) return false;
-    // Take ownership from D3D12 and put the image where the renderer expects every image to be.
+    // Take ownership from D3D12 and put the image in the layout the renderer draws in.
+    // The renderer transitions the window image to COLOR_ATTACHMENT_OPTIMAL at frame start and leaves
+    // it there (device.c), so that is the layout both transfers declare. D3D12 ignores layouts
+    // entirely, which is why this only has to be consistent between the two Vulkan barriers.
     VkImageMemoryBarrier b = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
         // The very first acquire comes from UNDEFINED: the image has never been written, and
         // claiming it was already GENERAL is the kind of lie validation exists to catch.
-        .oldLayout = p->initialised ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_UNDEFINED,
-        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .oldLayout = p->initialised ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL,
         .dstQueueFamilyIndex = p->qfam,
         .image = p->image,
@@ -289,8 +292,8 @@ bool uwp_vk_present_end(UwpVkPresent *p, bool vsync) {
     VkImageMemoryBarrier b = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
         .srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT,
-        .oldLayout = VK_IMAGE_LAYOUT_GENERAL,
-        .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .srcQueueFamilyIndex = p->qfam,
         .dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL,
         .image = p->image,

@@ -24,10 +24,12 @@
 #include <windows.applicationmodel.core.h>
 #include <windows.applicationmodel.h>
 #include <windows.foundation.h>
+#include <windows.graphics.display.h>
 #include <windows.storage.h>
 #include <windows.system.h>
 #include <windows.ui.core.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -37,7 +39,7 @@
 // entry point, and two symbols called main cannot coexist. See CMakeLists.txt.
 extern "C" void uwp_set_local_state(const wchar_t *path);
 extern "C" void uwp_set_install_dir(const wchar_t *path);
-extern "C" bool uwp_present_set_core_window(void *core_window_abi);
+extern "C" bool uwp_present_set_core_window(void *core_window_abi, uint32_t width, uint32_t height);
 extern "C" int skyrecomp_main(int argc, char **argv);
 
 namespace SkyRecomp {
@@ -90,7 +92,18 @@ public:
         // Hand the window to the presentation bridge here rather than in Run(): this is the moment
         // it exists, and DXGI must be able to reach it before the renderer creates its swapchain.
         // reinterpret_cast to IUnknown* is how a C++/CX handle becomes its ABI pointer.
-        if (!uwp_present_set_core_window(reinterpret_cast<::IUnknown *>(window))) {
+        // Bounds are in effective pixels; the swapchain needs physical ones, so scale by DPI.
+        auto bounds = window->Bounds;
+        uint32_t pw = static_cast<uint32_t>(bounds.Width);
+        uint32_t ph = static_cast<uint32_t>(bounds.Height);
+        try {
+            float dpi = Windows::Graphics::Display::DisplayInformation::GetForCurrentView()->LogicalDpi;
+            pw = static_cast<uint32_t>(bounds.Width * dpi / 96.0f + 0.5f);
+            ph = static_cast<uint32_t>(bounds.Height * dpi / 96.0f + 0.5f);
+        } catch (...) {
+            // No display information: 100% scaling is the right guess for a console.
+        }
+        if (!uwp_present_set_core_window(reinterpret_cast<::IUnknown *>(window), pw, ph)) {
             entry_log(L"SetWindow: the presentation bridge refused the CoreWindow");
         }
     }

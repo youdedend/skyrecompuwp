@@ -22,6 +22,7 @@ that no amount of patching removes.
 | 10 | SDL3 + SDL2's WinRT backend ported in | dependency to build | analysed, not built |
 | 11 | Entry host, CMake project, CI compile gate | new files | host **compiles** in CI; project never configured |
 | 12 | `uwp_present.cpp` — D3D12 CoreWindow swapchain | new file | **compiles** in CI; never run |
+| 12b | **patch 0006** — `device.c` onto the bridge | 82-line patch, 6 guarded regions | applies cleanly; **not compiled** |
 | 13 | `uwp_vk_present.c` — shared Vulkan image, ownership | new file | **compiles** in CI; never run |
 
 ---
@@ -267,10 +268,23 @@ Both halves are written and gated:
   semaphore threaded through the renderer's timeline.
 * The host hands the CoreWindow over in `SetWindow`, which is the moment it exists.
 
-Still missing is **patch 0006**: redirecting the five call sites in `device.c` onto
-`uwp_vk_present_begin` / `uwp_vk_present_end`, and replacing the surface queries in
-`create_swapchain()` (capabilities, formats, present modes) with the fixed R8G8B8A8_UNORM single
-image. That patch is the point where the renderer starts drawing into the bridge. Dozen has to expose `VK_KHR_external_memory`,
+**Patch 0006** does the renderer side: `device.c` keeps its frame model and its `sc_images[]` /
+`sc_views[]` arrays, but under `SKYRECOMP_UWP` the swapchain is one shared image, acquire is
+`uwp_vk_present_begin`, present is `uwp_vk_present_end`, and the SDL window and surface are never
+created. Six guarded regions, 82 lines. Two things it also had to handle, which surface-driven
+code hides:
+
+* `pick_device()` asks every queue family whether it can present to the surface — with no surface
+  that is a null handle, so the console branch treats every family as presentable and lets the
+  bridge submit to the queue D3D12 presents from.
+* `create_device()` requested `VK_KHR_swapchain`. On the console it requests
+  `VK_KHR_external_memory_win32` instead and **fails loudly** when the driver lacks it, because
+  without it there is no way to hand an image to D3D12. (`VK_KHR_external_memory` and
+  `VK_KHR_dedicated_allocation` are core in Vulkan 1.1, which is the floor here.)
+
+The bridge and the renderer also had to agree on a layout: the renderer leaves the window image in
+`COLOR_ATTACHMENT_OPTIMAL`, so both ownership transfers declare that, not `GENERAL`. D3D12 ignores
+Vulkan layouts, so this only has to be self-consistent — but it has to be. Dozen has to expose `VK_KHR_external_memory`,
 `VK_KHR_external_memory_win32` and `VK_KHR_dedicated_allocation`; gow3 calling
 `vkGetMemoryWin32HandleKHR` on the console is the evidence that it does.
 

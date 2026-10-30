@@ -39,6 +39,8 @@ namespace {
 // The CoreWindow the host handed over. Held as the raw ABI pointer for the process lifetime: the
 // view owns the window, and this only borrows it for CreateSwapChainForCoreWindow.
 IUnknown *g_core_window = nullptr;
+uint32_t g_window_width = 0;
+uint32_t g_window_height = 0;
 
 bool ok(HRESULT hr, const char *what) {
     if (SUCCEEDED(hr)) return true;
@@ -48,7 +50,7 @@ bool ok(HRESULT hr, const char *what) {
 
 }  // namespace
 
-extern "C" bool uwp_present_set_core_window(void *core_window_abi) {
+extern "C" bool uwp_present_set_core_window(void *core_window_abi, uint32_t width, uint32_t height) {
     if (!core_window_abi) return false;
     IUnknown *window = static_cast<IUnknown *>(core_window_abi);
     // The presenter outlives the call and hands the pointer to DXGI, so it takes its own
@@ -56,6 +58,16 @@ extern "C" bool uwp_present_set_core_window(void *core_window_abi) {
     window->AddRef();
     if (g_core_window) g_core_window->Release();
     g_core_window = window;
+    g_window_width = width;
+    g_window_height = height;
+    fprintf(stderr, "[present] CoreWindow %ux%u handed over\n", width, height);
+    return true;
+}
+
+extern "C" bool uwp_present_window_size(uint32_t *width, uint32_t *height) {
+    if (!g_core_window || !g_window_width || !g_window_height) return false;
+    if (width) *width = g_window_width;
+    if (height) *height = g_window_height;
     return true;
 }
 

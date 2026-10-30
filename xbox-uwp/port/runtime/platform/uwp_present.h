@@ -24,10 +24,14 @@ extern "C" {
 
 typedef struct UwpPresenter UwpPresenter;
 
-// The CoreWindow to present into, as the ABI IUnknown* of Windows::UI::Core::CoreWindow. The
-// activation host (uwp_entry.cpp) passes it on the UI thread before the renderer starts.
-// Returns false when there is no window yet.
-bool uwp_present_set_core_window(void *core_window_abi);
+// The CoreWindow to present into, as the ABI IUnknown* of Windows::UI::Core::CoreWindow, with its
+// size in physical pixels. The activation host (uwp_entry.cpp) passes both on the UI thread, before
+// the renderer starts. Returns false when there is no window yet.
+bool uwp_present_set_core_window(void *core_window_abi, uint32_t width, uint32_t height);
+
+// Size of that window. The renderer asks for it instead of an SDL window, which does not exist
+// here. Returns false while no window has been handed over.
+bool uwp_present_window_size(uint32_t *width, uint32_t *height);
 
 // Creates the D3D12 device, queue and CoreWindow swapchain. NULL on failure (reason in the log).
 UwpPresenter *uwp_present_create(uint32_t width, uint32_t height);
