@@ -441,6 +441,10 @@ of it has been executed. Grep for the marker.
    the game files set up, then the CMake project.
 7. **First frame on the console**, then the memory pager if and when the budget bites.
 
+Steps 2-8 now have an ordered, per-step recipe in `BUILD-PORT.md`, with each command's
+provenance and an explicit "not yet run" mark where nobody has executed it. That file did not
+exist until it was noticed that `CMakeLists.txt`'s own fatal error told the reader to go read it.
+
 Steps 1–5 all need a Windows machine with the UWP workload. They can run on GitHub Actions
 `windows-latest` (which already has VS 17.14 + both SDKs, proven by the smoke-test pipeline), but
 the game dump has to be supplied by the person building — it cannot be in a public CI job, and it
