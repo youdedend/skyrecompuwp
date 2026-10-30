@@ -3,11 +3,12 @@
 // Drop-in replacement for runtime/platform/windows.c. Implements the same 25 plat_* entry
 // points, for an AppContainer with WINAPI_FAMILY=WINAPI_FAMILY_APP and 5,120 MiB of memory.
 //
-// STATUS: written against the real contract in runtime/platform.h and the real semantics in
-// runtime/platform/windows.c, but **never compiled**. Nothing in this repository's CI can
-// compile it (needs MSVC/clang-cl + Windows SDK + the UWP workload). Treat the first build as
-// part of the work, not as a formality. Every place where I had to guess is marked
-// "UWP-ASSUMPTION" - grep for it.
+// STATUS: compiles clean with clang-cl in the UWP configuration
+// (WINAPI_FAMILY=WINAPI_FAMILY_APP, _CRT_APP, SKYRECOMP_UWP), enforced by
+// .github/workflows/compile-uwp-platform.yml on every change here. It has never been *run*:
+// no console, no game code, and none of the graphics/audio dependencies are built for UWP yet.
+// Every place where behaviour was assumed rather than measured is marked "UWP-ASSUMPTION" -
+// grep for it.
 //
 // What is deliberately different from windows.c, and why:
 //

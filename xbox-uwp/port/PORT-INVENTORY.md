@@ -10,12 +10,12 @@ that no amount of patching removes.
 
 | # | What | Kind | Status |
 |---|------|------|--------|
-| 1 | `runtime/platform/uwp.c` — 25 `plat_*` functions | new file, replaces `windows.c` | written, **never compiled** |
+| 1 | `runtime/platform/uwp.c` — 25 `plat_*` functions | new file, replaces `windows.c` | **compiles clean** in CI; never run |
 | 2 | `gamelib.c` — `LoadPackagedLibrary` | 18-line patch | written, applies cleanly |
 | 3 | `gamebuild.c` — no on-console compiler | 7-line patch | written, applies cleanly |
 | 4 | `mods.c` — no shell folder-open | 6-line patch | written, applies cleanly |
 | 5 | `main.c` — no re-exec on collision | 10-line patch | written, applies cleanly |
-| 6 | `uwp_compat.h` — POSIX names on UCRT | new file + 1-line `platform.h` patch | written, **never compiled** |
+| 6 | `uwp_compat.h` — POSIX names on UCRT | new file + 1-line `platform.h` patch | **compiles clean** in CI |
 | 7 | Game code must live **inside the package** | design change | analysed, not built |
 | 8 | User files reachable only through brokering | design change | analysed, not built |
 | 9 | Mesa Dozen + `dxil.dll` | dependency to build | analysed, not built |
@@ -93,7 +93,34 @@ The three `platform/*.c` files are excluded because the UWP build does not compi
 
 ---
 
-## 3. The four patches
+## 2b. The first compile, and what it found
+
+`.github/workflows/compile-uwp-platform.yml` builds `uwp.c` with `clang-cl /fsyntax-only` against
+the pinned upstream commit in the UWP configuration. Run `41052945145` is green: zero
+diagnostics. Getting there took three rounds, and each round was a real defect rather than a CI
+detail:
+
+| Round | Reported | Cause |
+|---|---|---|
+| 1 | nothing — "exit code 1" | GitHub's bash shell injects `-e -o pipefail`, so the failing compiler aborted the step before anything was parsed. |
+| 2 | `platform.h:12` selects `win_compat.h` | Git Bash rewrote `/DSKYRECOMP_UWP=1` into a path, so the define never arrived. Dash flags fix it; the probe step now measures this instead of assuming it. |
+| 3 | 6 errors, 5 warnings | Real API and CRT problems, listed below. |
+
+What round 3 found:
+
+* `GetCurrentPackagePathW`, `MoveFileA` and `AddVectoredExceptionHandler` are **not declared in
+  the APP partition** of this SDK, even with `<appmodel.h>`, `<fileapi.h>` and
+  `<errhandlingapi.h>` included explicitly. The first two were removed (the activation host
+  supplies the paths; log rotation uses `remove`/`rename`). The third stays and its prototype is
+  declared locally, with the reason at the declaration.
+* `_fmode` and `freopen` are deprecated by UCRT — `_set_fmode` and `freopen_s` instead.
+* The `LocalState` derivation was already known to be wrong; this forced it out. It now has an
+  honest fallback plus `uwp_set_local_state()`, which the activation host calls with
+  `ApplicationData.Current.LocalFolder.Path`.
+
+---
+
+## 3. The five patches
 
 `port/patches/`, generated with `git diff -U6` against `f005a61`, each verified with
 `git apply --check` against a pristine tree, and all four verified to apply together.
@@ -118,6 +145,10 @@ no `ShellExecuteA`. There is no Explorer on a console and the mods folder is in 
 `0x7000000000`; on collision the desktop build re-execs itself for a fresh layout. A UWP process
 cannot restart itself. The patch replaces the retry with a message naming the cause
 (`/HIGHENTROPYVA:NO`) instead of pretending to recover.
+
+**`0005-platform-uwp-compat-header.patch`.** One `#if` in `platform.h` so a UWP build selects
+`platform/uwp_compat.h` instead of the mingw-oriented `win_compat.h`. Mirrors the branch that is
+already there for Linux.
 
 ---
 
@@ -263,21 +294,26 @@ the memory limit is a fraction of the 5,120 MiB budget.
 | 4 patches apply to `f005a61` | `git apply --check`, all four, then applied together |
 | 0 hard violations after the port | checker run, quoted above |
 | game code must be in the package | `LoadPackagedLibrary` documentation + `gamelib.c:60` |
-| `uwp.c` **compiles** | **no — never compiled.** No MSVC, no Windows SDK, no UWP workload here |
+| `uwp.c` **compiles** | **yes** — clang-cl `/fsyntax-only`, `WINAPI_FAMILY_APP` + `_CRT_APP` + `SKYRECOMP_UWP`, run `41052945145` green, 0 diagnostics |
 | `uwp.c` **runs on a console** | **no — never run** |
 | Dozen/SDL3/FFmpeg link | **no — none of them built for UWP yet** |
 
-Every place `uwp.c` had to guess is marked `UWP-ASSUMPTION`. Grep for it. The first real
-compile is part of the work, not a formality: expect a batch of `WINAPI_FAMILY` errors that are
-mechanical, and expect at least one API that turns out to be unavailable and needs the WinRT
-replacement instead.
+The first real compile has now happened, and it was worth having: six errors and five
+warnings, all of them real. Two APIs the platform layer wanted (`GetCurrentPackagePathW`,
+`MoveFileA`) are **not declared in the APP partition of this SDK**, even when their documented
+headers are included, so both dependencies were removed rather than worked around. A third,
+`AddVectoredExceptionHandler`, cannot be removed - lazy commit of the guest window is a vectored
+exception handler - so its prototype is declared locally with the reason recorded there.
+
+Behavioural guesses are still guesses: everything marked `UWP-ASSUMPTION` compiles, and none
+of it has been executed. Grep for the marker.
 
 ---
 
 ## 9. Remaining work, in order
 
-1. **Build `uwp.c` with clang-cl on Windows**, fix the compile errors. Needs the UWP workload
-   and SDK 10.0.26100. Cheapest possible step; everything downstream is blocked on it.
+1. ~~Build `uwp.c` with clang-cl on Windows~~ **Done** — `compile-uwp-platform.yml`, green.
+   The gate is now permanent: any change here that breaks the UWP configuration fails CI.
 2. **Write `port/runtime/platform/uwp_entry.cpp`** — the entry host the manifest names. Shape is
    now known (section 7): `wWinMain` + `SDL_RunApp`, with the WinRT app model coming from the
    SDL fork. It must obtain `ApplicationData.Current.LocalFolder.Path` and

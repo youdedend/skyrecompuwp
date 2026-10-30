@@ -57,8 +57,13 @@ def main() -> int:
     stripped = text.strip()
 
     if not stripped:
-        print("::error::the compiler produced no output at all - it probably never ran "
-              "(missing clang-cl, or the environment step failed)")
+        # A clean compile writes nothing. Only treat silence as a failure when the compiler also
+        # reported a non-zero status - which is the "clang-cl never ran" case.
+        if args.status in (None, 0):
+            print("::notice::uwp.c compiled clean in the UWP configuration (0 diagnostics)")
+        else:
+            print(f"::error::the compiler exited {args.status} without printing anything - "
+                  f"it probably never ran (missing clang-cl, or the environment step failed)")
         return 0
 
     found = []
