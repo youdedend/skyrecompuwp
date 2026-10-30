@@ -129,22 +129,59 @@ jobs:
           PY=$(command -v python || command -v python3 || echo python)
           $PY port/xbox-uwp/port/annotate-diagnostics.py diag.txt \
               --root upstream --status "${{ steps.check.outputs.status }}"
+          if [ -f entry-diag.txt ]; then
+            $PY port/xbox-uwp/port/annotate-diagnostics.py entry-diag.txt \
+                --root upstream --status "${{ steps.entry.outputs.status }}"
+          fi
+          exit 0
+
+      - name: Syntax check uwp_entry.cpp (MSVC /ZW)
+        id: entry
+        shell: bash
+        env:
+          MSYS_NO_PATHCONV: '1'
+        run: |
+          # C++/CX cannot be compiled by clang-cl: /ZW is MSVC only. The runtime is clang-cl and
+          # the host is MSVC, which is legal because both are MSVC x64 ABI - but it does mean this
+          # one file needs its own check, in its own compiler.
+          set +e
+          WINDOWS_WINMD=$(ls "$WindowsSdkDir"/UnionMetadata/*/Windows.winmd 2>/dev/null | head -1)
+          echo "Windows.winmd: ${WINDOWS_WINMD:-not found}"
+          cl /nologo /Zs /ZW /EHsc /W3 \
+             /D_WIN32_WINNT=0x0A00 \
+             /DWINAPI_FAMILY=WINAPI_FAMILY_APP \
+             /D_CRT_APP \
+             /D_CRT_SECURE_NO_WARNINGS \
+             ${WINDOWS_WINMD:+/FU"$WINDOWS_WINMD"} \
+             upstream/runtime/platform/uwp_entry.cpp > entry-diag.txt 2>&1
+          status=$?
+          echo "cl exit: $status"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          head -40 entry-diag.txt
           exit 0
 
       - name: Fail if the compiler rejected the platform layer
         shell: bash
         run: |
+          fail=0
           if [ "${{ steps.check.outputs.status }}" != "0" ]; then
             echo "::error::uwp.c does not compile in the UWP configuration (see annotations)"
-            exit 1
+            fail=1
           fi
-          echo "uwp.c compiles clean in the UWP configuration"
+          if [ "${{ steps.entry.outputs.status }}" != "0" ]; then
+            echo "::error::uwp_entry.cpp does not compile with /ZW (see annotations)"
+            fail=1
+          fi
+          [ "$fail" = "0" ] || exit 1
+          echo "uwp.c and uwp_entry.cpp both compile in the UWP configuration"
 
       - name: Upload the raw diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: uwp-compile-diagnostics
-          path: diag.txt
+          path: |
+            diag.txt
+            entry-diag.txt
           if-no-files-found: ignore
           retention-days: 14
