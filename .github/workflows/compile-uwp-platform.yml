@@ -68,6 +68,7 @@ jobs:
           set -euo pipefail
           cp port/xbox-uwp/port/runtime/platform/uwp.c        upstream/runtime/platform/uwp.c
           cp port/xbox-uwp/port/runtime/platform/uwp_compat.h upstream/runtime/platform/uwp_compat.h
+          cp port/xbox-uwp/port/runtime/platform/uwp_entry.cpp upstream/runtime/platform/uwp_entry.cpp
           ls -l upstream/runtime/platform/
 
       - name: Set up the MSVC/UWP environment
