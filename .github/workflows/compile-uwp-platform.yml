@@ -336,6 +336,9 @@ jobs:
 
       - name: Build and run the POSIX shim self-test
         id: selftest
+        # A self-test that hangs is a failure, and one that hangs the runner is worse. Bounded here
+        # as well as at job level, so a regression in the shims costs three minutes, not twenty-five.
+        timeout-minutes: 4
         shell: bash
         run: |
           # A shim that compiles proves the signatures, not the behaviour. This is a Win32 program,
