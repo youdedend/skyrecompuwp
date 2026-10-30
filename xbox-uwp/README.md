@@ -135,6 +135,20 @@ Result, from run [#41037609285](https://github.com/youdedend/skyrecompuwp/action
 
 That is a real, signed, deployable UWP package — of the smoke test, not of the game.
 
+**It has been installed, not just built.** CI now registers the `.msix` with `Add-AppxPackage`
+on the runner — the same deployment path the console uses (manifest validation, signature
+chain, dependency resolution, `resources.pri`) — and asserts the result:
+
+```
+registered SkyRecomp.UwpSmoke_1.0.0.0_x64__c1fsbqhgqkfer  status=Ok  arch=X64
+```
+
+Run [#41038191512](https://github.com/youdedend/skyrecompuwp/actions/runs/41038191512),
+`sha256=d0b691acf8f399cfe7805e4a192fedaaffb06f866b16083b06873d6112a5b447`.
+
+Still unproven by CI: that it *renders*. A headless Windows Server runner has no interactive
+session or GPU, so launch-and-draw only happens on your console.
+
 ## Licence / provenance
 
 `assets/app-icon.png` and `assets/app-icon.svg` are copied unmodified from the upstream

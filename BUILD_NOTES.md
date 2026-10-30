@@ -289,6 +289,11 @@ only deploying it to a Developer Mode console does that, and that step is yours.
 | SHA256 | `bb64f58b158ba19e6b8aad914b3f618dca6b6f93f90b9d40e09f9fc3560ef2eb` |
 | Contents | signed `.msix`, `.cer`, `dependencies\Microsoft.VCLibs.x64.14.00.appx`, `INSTALL.md`, `SHA256SUMS.txt` |
 
+CI also **installs** that package with `Add-AppxPackage` and asserts
+`Get-AppxPackage` reports `Status = Ok` (`SkyRecomp.UwpSmoke_1.0.0.0_x64__c1fsbqhgqkfer`), which
+exercises the same deployment path the console uses. It does not prove rendering — a headless
+runner has no session or GPU.
+
 Note the distinction this document has kept throughout: that package is **the smoke test**, a
 ~200-line D3D11 app. It is not SkyRecomp. There is still no `xbox-uwp.zip` for the game, and
 creating one is the port project in `XBOX-UWP-PORT-PLAN.md`.
