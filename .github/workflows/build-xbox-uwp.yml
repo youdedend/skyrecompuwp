@@ -192,6 +192,50 @@ jobs:
           # checksum verifiable without fetching the blob-hosted job log.
           Write-Host "::warning title=Xbox UWP smoke package::sha256=$hash size=$size"
 
+      - name: Verify the package actually installs (Windows)
+        shell: powershell
+        run: |
+          # The closest thing to "running it" that a headless runner allows: register the
+          # package through the real deployment stack. This exercises exactly what the console
+          # does - manifest validation, signature chain, framework dependency resolution, and
+          # resource index (resources.pri) - and fails if any of them is wrong.
+          # It does NOT prove the app renders: that needs an interactive session/GPU, which
+          # Windows Server runners do not have. Console launch is still yours to confirm.
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:OUT_DIR '_zip'
+
+          $dep = Get-ChildItem -Path $stage -Recurse -Filter 'Microsoft.VCLibs*.appx' -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          if ($dep) {
+              Write-Host "== installing dependency $($dep.Name)"
+              Add-AppxPackage -Path $dep.FullName
+          } else {
+              Write-Warning 'No VCLibs dependency found in the package output.'
+          }
+
+          $msix = Get-ChildItem -Path $stage -Filter '*.msix' | Select-Object -First 1
+          if (-not $msix) { throw 'No .msix found to install.' }
+          Write-Host "== installing $($msix.Name)"
+          try {
+              Add-AppxPackage -Path $msix.FullName -ErrorAction Stop
+          } catch {
+              $m = $_.Exception.Message -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'
+              Write-Host "::error title=Add-AppxPackage failed::$m"
+              throw
+          }
+
+          # Confirm the OS registered a real package with the identity we claimed.
+          $pkg = Get-AppxPackage -Name 'SkyRecomp.UwpSmoke'
+          if (-not $pkg) { throw 'Package did not register (Get-AppxPackage returned nothing).' }
+          Write-Host "== registered"
+          $pkg | Format-List Name, PackageFullName, Version, Architecture, Publisher, Status
+          if ($pkg.Status -ne 'Ok') { throw "Package registered with status '$($pkg.Status)' instead of Ok." }
+
+          Write-Host "::warning title=Package installs::registered $($pkg.PackageFullName) status=$($pkg.Status) arch=$($pkg.Architecture)"
+
+          Remove-AppxPackage -Package $pkg.PackageFullName
+          Write-Host '== uninstalled (runner is ephemeral anyway)'
+
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
