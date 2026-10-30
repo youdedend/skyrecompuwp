@@ -24,6 +24,8 @@ import sys
 DIAG = re.compile(r"^(?P<path>.+?)\((?P<line>\d+),(?P<col>\d+)\):\s*(?P<sev>error|warning|note):\s*(?P<msg>.*)$")
 #   file.c:12:5: error: message    (clang when driven as clang rather than clang-cl)
 DIAG_COLON = re.compile(r"^(?P<path>.+?):(?P<line>\d+):(?P<col>\d+):\s*(?P<sev>error|warning|note):\s*(?P<msg>.*)$")
+#   file.cpp(159): error C2064: message      (MSVC, no column)
+DIAG_NOC0L = re.compile(r"^(?P<path>.+?)\((?P<line>\d+)\):\s*(?P<sev>error|warning|note)\s+[A-Z]+\d+:\s*(?P<msg>.*)$")
 
 MAX_ANNOTATIONS = 50   # GitHub caps annotations per step; beyond this, summarise.
 
@@ -68,7 +70,7 @@ def main() -> int:
 
     found = []
     for line in text.splitlines():
-        for rx in (DIAG, DIAG_COLON):
+        for rx in (DIAG, DIAG_COLON, DIAG_NOC0L):
             m = rx.match(line.strip())
             if m:
                 found.append(m)
@@ -81,8 +83,9 @@ def main() -> int:
         sev = "error" if m.group("sev") == "error" else "warning"
         if m.group("sev") == "note":
             continue                      # notes attach to their diagnostic; noise in annotations
-        print(f"::{sev} file={normalise(m.group('path'), args.root)},"
-              f"line={m.group('line')},col={m.group('col')}::{escape(m.group('msg'))}")
+        col = m.groupdict().get("col")
+        where = f"line={m.group('line')}" + (f",col={col}" if col else "")
+        print(f"::{sev} file={normalise(m.group('path'), args.root)},{where}::{escape(m.group('msg'))}")
 
     if len(found) > MAX_ANNOTATIONS:
         print(f"::error::{len(found) - MAX_ANNOTATIONS} further diagnostics not shown (cap {MAX_ANNOTATIONS})")
@@ -93,7 +96,9 @@ def main() -> int:
         print(f"::error::compiler failed with unrecognised output; first 900 characters follow%0A"
               f"{escape(stripped[:900])}")
     else:
-        print(f"::error::uwp.c: {len(errors)} error(s), {len(warnings)} warning(s) in the UWP configuration")
+        label = {"diag.txt": "uwp.c", "entry-diag.txt": "uwp_entry.cpp"}.get(os.path.basename(args.diag),
+                                                                              os.path.basename(args.diag))
+        print(f"::error::{label}: {len(errors)} error(s), {len(warnings)} warning(s)")
 
     return 0
 

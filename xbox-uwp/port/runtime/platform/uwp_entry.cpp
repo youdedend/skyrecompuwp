@@ -85,7 +85,7 @@ public:
     }
 
     virtual void SetWindow(Windows::UI::Core::CoreWindow ^ window) {
-        m_window = window;
+        m_window = ref new Platform::Agile<Windows::UI::Core::CoreWindow>(window);
     }
 
     virtual void Load(Platform::String ^ entryPoint) {
@@ -113,7 +113,8 @@ public:
         // The budget check that turns a wrong Dev Home app type into a clear message instead of an
         // out-of-memory in the middle of the renderer.
         try {
-            unsigned long long limit = Windows::System::MemoryManager::AppMemoryUsageLimit();
+            // A property, not a method: C++/CX exposes it without parentheses.
+            unsigned long long limit = Windows::System::MemoryManager::AppMemoryUsageLimit;
             if (limit < (2ull << 30)) {
                 entry_log(L"memory limit is under 2 GiB: the app's Type is probably not Game");
                 entry_fail(L"memory budget",
@@ -130,7 +131,7 @@ public:
     }
 
     virtual void Run() {
-        if (m_window) m_window->Activate();
+        if (m_window && m_window->Get()) m_window->Get()->Activate();
 
         // One argument: the runtime reads the game from its own directories, and a packaged app has
         // no command line to speak of.
@@ -156,7 +157,10 @@ public:
     virtual void Uninitialize() {}
 
 private:
-    Windows::UI::Core::CoreWindow ^ m_window = nullptr;
+    // Agile, because this object is created on the app's UI apartment and read from Run(): holding a
+    // CoreWindow in a plain ^ member across apartment boundaries is exactly the marshaling hazard
+    // C4451 warns about.
+    Platform::Agile<Windows::UI::Core::CoreWindow> ^ m_window = nullptr;
 };
 
 ref class AppSource sealed : public Windows::ApplicationModel::Core::IFrameworkViewSource {
