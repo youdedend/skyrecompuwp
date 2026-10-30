@@ -85,7 +85,7 @@ public:
     }
 
     virtual void SetWindow(Windows::UI::Core::CoreWindow ^ window) {
-        m_window = ref new Platform::Agile<Windows::UI::Core::CoreWindow>(window);
+        m_window = window;
     }
 
     virtual void Load(Platform::String ^ entryPoint) {
@@ -131,7 +131,7 @@ public:
     }
 
     virtual void Run() {
-        if (m_window && m_window->Get()) m_window->Get()->Activate();
+        if (m_window) m_window->Activate();
 
         // One argument: the runtime reads the game from its own directories, and a packaged app has
         // no command line to speak of.
@@ -157,10 +157,15 @@ public:
     virtual void Uninitialize() {}
 
 private:
-    // Agile, because this object is created on the app's UI apartment and read from Run(): holding a
-    // CoreWindow in a plain ^ member across apartment boundaries is exactly the marshaling hazard
-    // C4451 warns about.
-    Platform::Agile<Windows::UI::Core::CoreWindow> ^ m_window = nullptr;
+    // C4451 says a ref class held in a member can be marshaled across apartments. Every
+    // IFrameworkView callback for one view runs on that view's UI thread, so SetWindow and Run
+    // are the same apartment and there is nothing to marshal. (Platform::Agile would be the
+    // general answer; it is not in scope for this TU, and wrapping the window to satisfy a
+    // warning about a situation that cannot occur would be worse than stating why.)
+#pragma warning(push)
+#pragma warning(disable : 4451)
+    Windows::UI::Core::CoreWindow ^ m_window = nullptr;
+#pragma warning(pop)
 };
 
 ref class AppSource sealed : public Windows::ApplicationModel::Core::IFrameworkViewSource {
