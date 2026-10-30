@@ -71,7 +71,17 @@ jobs:
           cp port/xbox-uwp/port/runtime/platform/uwp_entry.cpp upstream/runtime/platform/uwp_entry.cpp
           cp port/xbox-uwp/port/runtime/platform/uwp_present.h  upstream/runtime/platform/uwp_present.h
           cp port/xbox-uwp/port/runtime/platform/uwp_present.cpp upstream/runtime/platform/uwp_present.cpp
+          cp port/xbox-uwp/port/runtime/platform/uwp_vk_present.h  upstream/runtime/platform/uwp_vk_present.h
+          cp port/xbox-uwp/port/runtime/platform/uwp_vk_present.c  upstream/runtime/platform/uwp_vk_present.c
           ls -l upstream/runtime/platform/
+
+      - name: Fetch Vulkan headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only the headers: the Vulkan-side file is checked for type correctness, not linked.
+          git clone -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers vkheaders
+          ls vkheaders/include/vulkan/vulkan_core.h
 
       - name: Set up the MSVC/UWP environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -135,6 +145,23 @@ jobs:
           present=$?
           echo "clang-cl (uwp_present.cpp) exit: $present"
           [ "$present" -eq 0 ] || status=1
+
+          # The Vulkan half needs the Khronos headers; it is checked as C, like the runtime it
+          # belongs to.
+          clang-cl -nologo -fsyntax-only -W3 \
+            -DWINAPI_FAMILY=WINAPI_FAMILY_APP \
+            -D_CRT_APP \
+            -DSKYRECOMP_UWP=1 \
+            -D_WIN32_WINNT=0x0A00 \
+            -D_CRT_SECURE_NO_WARNINGS \
+            -DNOMINMAX \
+            -D_AMD64_ -D_WIN64 \
+            -I upstream/runtime \
+            -I vkheaders/include \
+            upstream/runtime/platform/uwp_vk_present.c >> diag.txt 2>&1
+          vkpresent=$?
+          echo "clang-cl (uwp_vk_present.c) exit: $vkpresent"
+          [ "$vkpresent" -eq 0 ] || status=1
 
           echo "status=$status" >> "$GITHUB_OUTPUT"
           head -60 diag.txt
