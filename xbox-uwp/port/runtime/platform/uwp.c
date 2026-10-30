@@ -31,7 +31,14 @@
 //      returning -1 ("no tracking: the renderer reads guest memory in place"), so that
 //      degradation is free. See PORT-BLUEPRINT.md section 3 for the pager work still to do.
 
+// The APP partition of the SDK's windows.h does not pull in everything the desktop partition
+// does, so the owners of the calls below are included explicitly. (Found by the first real
+// compile: GetCurrentPackagePathW, MoveFileA and AddVectoredExceptionHandler were undeclared.)
 #include <windows.h>
+
+#include <appmodel.h>        // GetCurrentPackagePathW, PACKAGE_*_MAX_LENGTH
+#include <errhandlingapi.h>  // AddVectoredExceptionHandler
+#include <fileapi.h>         // MoveFileA
 
 #include <fcntl.h>
 #include <io.h>
@@ -71,34 +78,31 @@ static void resolve_paths(void) {
     UINT32 len = (UINT32)(sizeof wpath / sizeof *wpath);
     if (SUCCEEDED(GetCurrentPackagePathW(&len, wpath))) utf8_from_wide(wpath, g_install_dir, sizeof g_install_dir);
 
-    // %LOCALAPPDATA% in a packaged app is already redirected into the package's own profile,
-    // so appending LocalState is only correct together with the package family name below.
-    char local[MAX_PATH * 3] = { 0 };
-    DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", local, (DWORD)sizeof local);
-    if (n > 0 && n < sizeof local) {
-        // UWP-ASSUMPTION: GetCurrentPackageFullName is in the UWP allowlist (kernel32, app model).
-        // If the first build says otherwise, replace this with the WinRT
-        // ApplicationData.Current.LocalFolder.Path read from the app's activation code
-        // (C++/CX) and pass it in through a setter.
-        wchar_t pfn[PACKAGE_FULL_NAME_MAX_LENGTH];  // actually the full name here
-        UINT32 pfnLen = (UINT32)(sizeof pfn / sizeof *pfn);
-        char name[PACKAGE_FULL_NAME_MAX_LENGTH] = { 0 };
-        if (SUCCEEDED(GetCurrentPackageFullName(&pfnLen, pfn)) &&
-            utf8_from_wide(pfn, name, sizeof name)) {
-            // <LOCALAPPDATA>\Packages\<PackageFamilyName>\LocalState
-            // The full name is "Name_Version_Arch__PublisherId"; the family name drops the
-            // version and architecture. LOCALAPPDATA under a packaged process is already the
-            // package's LocalCache parent, so tolerate both shapes and let the caller fall back.
-            snprintf(g_local_state, sizeof g_local_state, "%s\\Packages\\%s\\LocalState", local, name);
-            DWORD attr = GetFileAttributesA(g_local_state);
-            if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
-                // Fall back to the redirected shape (already inside the package profile).
-                snprintf(g_local_state, sizeof g_local_state, "%s\\LocalState", local);
-            }
-        } else {
-            snprintf(g_local_state, sizeof g_local_state, "%s\\LocalState", local);
-        }
+    // LocalState is normally supplied by the activation host from
+    // ApplicationData.Current.LocalFolder.Path, which is the only exact source. The fallback
+    // below is deliberately dumb: %LOCALAPPDATA% inside a packaged process is redirected to
+    // <...>\Packages\<PFN>\LocalCache\Local, so it is writable and inside the app's profile
+    // even though the name does not say LocalState. The earlier version of this function
+    // synthesised <LOCALAPPDATA>\Packages\<PackageFullName>\LocalState, which never resolves -
+    // the folder is keyed by family name, not full name - so it always fell through.
+    if (!g_local_state[0]) {
+        char local[MAX_PATH * 3] = { 0 };
+        DWORD n = GetEnvironmentVariableA("LOCALAPPDATA", local, (DWORD)sizeof local);
+        if (n > 0 && n < sizeof local) snprintf(g_local_state, sizeof g_local_state, "%s\\LocalState", local);
     }
+}
+
+// The activation host calls these with the WinRT-resolved paths before plat_init(). They are the
+// only reliable way to find LocalState; resolve_paths() runs once and remembers the answer.
+void uwp_set_local_state(const wchar_t *path) {
+    g_paths_ready = false;  // a later resolve must not keep a guessed value
+    g_local_state[0] = 0;
+    utf8_from_wide(path, g_local_state, sizeof g_local_state);
+}
+void uwp_set_install_dir(const wchar_t *path) {
+    g_paths_ready = false;
+    g_install_dir[0] = 0;
+    utf8_from_wide(path, g_install_dir, sizeof g_install_dir);
 }
 
 const char *uwp_local_state_dir(void) { resolve_paths(); return g_local_state; }
@@ -282,7 +286,8 @@ static void log_to_local_state(void) {
         MoveFileA(g_log_path, prev);
     }
 
-    if (!freopen(g_log_path, "wb", stderr)) { g_log_path[0] = 0; return; }
+    FILE *out = NULL;
+    if (freopen_s(&out, g_log_path, "wb", stderr) != 0 || !out) { g_log_path[0] = 0; return; }
     setvbuf(stderr, NULL, _IONBF, 0);
     _dup2(_fileno(stderr), _fileno(stdout));
     fprintf(stderr, "[diagnostics] log: %s\n", g_log_path);
@@ -304,7 +309,7 @@ void plat_init(void) {
     require_cpu();
     // No console, no timeBeginPeriod, no SetProcessInformation, no SetConsoleOutputCP in UWP:
     // precise waits use the high-resolution waitable timer in plat_sleep_until_ns instead.
-    _fmode = _O_BINARY;  // fopen/open default to binary (the runtime's "r"/"w" files are binary or LF text)
+    _set_fmode(_O_BINARY);  // fopen/open default to binary (_fmode itself is deprecated)
     _setmode(_fileno(stdout), _O_BINARY);
     _setmode(_fileno(stderr), _O_BINARY);
 }
