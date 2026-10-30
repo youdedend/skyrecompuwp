@@ -78,15 +78,31 @@ jobs:
           # to v142 if this image only carries the older UWP toolset. Which one worked is
           # printed, so the log never leaves the toolchain ambiguous.
           $builtWith = $null
+          $log = Join-Path $env:RUNNER_TEMP 'msbuild-smoketest.log'
           foreach ($toolset in @('v143', 'v142')) {
               Write-Host "== attempting PlatformToolset=$toolset"
               & $msbuild xbox-uwp\smoketest\SkyRecompUwpSmoke.vcxproj `
                   /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=$toolset `
-                  /m /v:minimal /nologo
+                  /m /v:minimal /nologo 2>&1 | Tee-Object -FilePath $log
               if ($LASTEXITCODE -eq 0) { $builtWith = $toolset; break }
               Write-Warning "PlatformToolset=$toolset failed with exit code $LASTEXITCODE"
           }
-          if (-not $builtWith) { throw 'MSBuild failed for every candidate PlatformToolset' }
+          if (-not $builtWith) {
+              # Surface the real compiler/linker errors as annotations. Job logs live in blob
+              # storage that some clients cannot reach; annotations are readable anywhere.
+              $errs = Select-String -Path $log -Pattern 'error [A-Z]+[0-9]+|error MSB[0-9]+' -ErrorAction SilentlyContinue |
+                  Select-Object -First 15
+              if ($errs) {
+                  foreach ($e in $errs) {
+                      $msg = $e.Line.Trim() -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
+                      Write-Host "::error title=MSBuild::($msg)"
+                  }
+              } else {
+                  Write-Host "::error title=MSBuild::Build failed with no matching error line; see log tail below."
+                  Get-Content $log -Tail 40 | ForEach-Object { Write-Host "::error::$($_ -replace '%','%25')" }
+              }
+              throw 'MSBuild failed for every candidate PlatformToolset'
+          }
           Write-Host "== built with PlatformToolset=$builtWith"
           "TOOLSET=$builtWith" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 

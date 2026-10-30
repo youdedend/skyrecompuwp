@@ -261,7 +261,14 @@ runner**. That is what `xbox-uwp/` contains.
   `/p:WindowsTargetPlatformVersion=...`.
 - The workflow tries `PlatformToolset=v143`, falls back to `v142`, and prints which one worked —
   the image lists the v142 UWP toolset explicitly, so the build cannot be left hostage to that detail.
-- Static CRT (`/MT`) on purpose: no `Microsoft.VCLibs` framework dependency to deploy alongside.
+- **CRT: `/MD` (required).** An earlier draft used the static CRT to avoid a VCLibs dependency;
+  that is impossible with C++/CX — CI failed with
+  `cl : command line error D8016: '/MT' and '/ZW' command-line options are incompatible`
+  (Microsoft, WindowsAppSDK `HybridCRT.md`). The project now links `/MD` and
+  `Package-Uwp.ps1` locates `Microsoft.VCLibs.x64.14.00.appx` in the SDK ExtensionSDKs and
+  ships it in the zip's `dependencies\` folder, to be installed before the app.
+- The same rule forced a second fix: `<LanguageStandard>stdcpp17</LanguageStandard>` was removed,
+  because `/ZW` is also incompatible with `/std:c++17` and `/std:c++20` (same error code).
 
 ### What running the CI proves, and what it does not
 
@@ -272,16 +279,20 @@ on your console.
 Does not prove: anything about the game running. The smoke app is not the runtime. It exists so
 that when the port lands, packaging is already a solved, boring step.
 
-### Two bugs found by the packaging checks, worth knowing about
+### Three bugs found before they reached you
 
 1. `signtool` has no `export` verb; certificates are now exported with the .NET certificate API.
-2. A `{{TOKENS}}` mention inside an XML comment in the manifest template would have tripped the
-   packager's un-replaced-placeholder guard at runtime. The guard is strict on purpose; the
+2. A placeholder-syntax mention inside an XML comment in the manifest template would have tripped
+   the packager's un-replaced-placeholder guard at runtime. The guard is strict on purpose; the
    comment was rewritten.
+3. **The first real CI run failed** with `D8016: '/MT' and '/ZW' are incompatible`. Static CRT and
+   C++/CX cannot coexist. Fixed to `/MD` + shipped `dependencies\Microsoft.VCLibs.x64.14.00.appx`.
+   The workflow now also emits the first MSBuild error lines as check-run annotations, so failures
+   are readable without downloading job logs.
 
 ### Honest limitation
 
-This audit host is Linux: no PowerShell, no MSVC, no Windows SDK. The PowerShell scripts were
-validated structurally (here-strings, brace/paren balance, tool resolution, token coverage) but
-have **never been executed**. The first real execution is the CI job. If it fails, it will fail
-in the packaging layer, not the architecture, and the log will say exactly where.
+The audit host is Linux: no PowerShell, no MSVC, no Windows SDK, so nothing could be compiled
+locally. Everything is validated by the CI job on `windows-2022` instead, and the first run
+already earned its keep by catching the `/MT` vs `/ZW` conflict. Treat a green CI run — not this
+document — as the proof that the packaging pipeline works.

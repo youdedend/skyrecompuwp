@@ -54,6 +54,10 @@ param(
     [string]$IconLabel    = "",
     [string]$CertPfx      = "",
     [string]$CertPassword = "",
+    # The app links the DLL CRT (/MD is mandatory with C++/CX), so the Microsoft.VCLibs
+    # framework package has to be installed on the console before the app. Leave empty to
+    # auto-locate it in the Windows SDK ExtensionSDKs; the packager ships it in the zip.
+    [string]$VclibsPath   = "",
     [switch]$SkipSign
 )
 
@@ -76,6 +80,25 @@ function Find-SdkTool([string]$name) {
         Select-Object -First 1
     if (-not $tool) { throw "$name not found in $kits. Install the Windows 11 SDK (10.0.26100.0 or newer)." }
     return $tool.FullName
+}
+
+function Find-Vclibs {
+    if ($VclibsPath -ne "") {
+        if (-not (Test-Path $VclibsPath)) { throw "VclibsPath does not exist: $VclibsPath" }
+        return (Resolve-Path $VclibsPath).Path
+    }
+    $roots = @(
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft SDKs\Windows Kits\10\ExtensionSDKs\Microsoft.VCLibs"),
+        (Join-Path ${env:ProgramFiles(x86)} "Microsoft SDKs\Windows\v10.0\ExtensionSDKs\Microsoft.VCLibs")
+    )
+    foreach ($root in $roots) {
+        if (Test-Path $root) {
+            $hit = Get-ChildItem -Path $root -Recurse -Filter "Microsoft.VCLibs.x64.14.00.appx" -ErrorAction SilentlyContinue |
+                Sort-Object FullName -Descending | Select-Object -First 1
+            if ($hit) { return $hit.FullName }
+        }
+    }
+    return $null
 }
 
 Write-Section "Resolving toolchain"
@@ -276,11 +299,25 @@ New-Item -ItemType Directory -Force -Path $zipDir | Out-Null
 Copy-Item $msixPath $zipDir
 if ($cerOut -and (Test-Path $cerOut)) { Copy-Item $cerOut $zipDir }
 
+# Framework dependency: without this the app installs and then fails to start because the
+# VC++ runtime DLLs are not part of the package (we link /MD, which C++/CX requires).
+$vclibs = Find-Vclibs
+if ($vclibs) {
+    $depDir = Join-Path $zipDir "dependencies"
+    New-Item -ItemType Directory -Force -Path $depDir | Out-Null
+    Copy-Item $vclibs $depDir
+    $vclibsName = Split-Path -Leaf $vclibs
+    Write-Host "dependency: $vclibsName (install this before the app on the console)"
+} else {
+    $vclibsName = $null
+    Write-Warning "Microsoft.VCLibs.x64.14.00.appx not found; the package will need the VC++ runtime installed separately."
+}
+
 $install = @"
 $DisplayName - Xbox UWP package (Developer Mode sideloading only)
 
 Contents
-  $msixName$(if ($cerOut) { "`n  $PackageName.cer      signing certificate - trust this on the console first" })
+  $msixName$(if ($cerOut) { "`n  $PackageName.cer      signing certificate - trust this on the console first" })$(if ($vclibsName) { "`n  dependencies\$vclibsName`n                        VC++ runtime framework - install BEFORE the app" })
 
 This package is signed with a self-signed certificate. It cannot be installed in
 Retail mode, and it cannot be installed on a console that does not trust the
@@ -291,8 +328,8 @@ Install
      (Dev Home > Settings > Remote Access), normally https://<console-ip>:11443
   2. Device Portal > Certificates (or the sandbox's certificate manager):
      add $PackageName.cer as trusted.
-  3. Device Portal > Apps > Add / Register package: select $msixName
-     (add dependency packages here too, if the deployment asks for them).
+  3. Device Portal > Apps > Add / Register package: if a dependencies folder is present,
+     install the Microsoft.VCLibs framework package FIRST, then select $msixName.
   4. Dev Home > the app > View details > App type = Game (needed for the full
      5120 MiB memory budget instead of the small App-mode budget).
   5. Launch from My games & apps inside the Developer Mode sandbox.
@@ -305,10 +342,10 @@ Identity
 "@
 Set-Content -LiteralPath (Join-Path $zipDir "INSTALL.md") -Value $install -Encoding UTF8
 
-$files = Get-ChildItem -Path $zipDir -File
+$files = Get-ChildItem -Path $zipDir -File -Recurse
 $lines = foreach ($f in $files) {
     $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash.ToLower()
-    "$h  $($f.Name)"
+    "$h  $($f.FullName.Substring($zipDir.Length).TrimStart('\'))"
 }
 Set-Content -LiteralPath (Join-Path $zipDir "SHA256SUMS.txt") -Value ($lines -join "`n") -Encoding UTF8
 

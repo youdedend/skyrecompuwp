@@ -93,9 +93,10 @@ still present — so enabling the variable can never silently produce a broken p
    (`https://<console-ip>:11443`).
 3. **PC**: trust the certificate on the console — Device Portal → certificates, upload
    `SkyRecompUwpSmoke.cer` (the console rejects untrusted signers with `0x800B0109`).
-4. **PC**: Device Portal → *Apps* → add/register package → choose the `.msix`.
-   Architecture is x64; if it asks for a dependency (VCLibs), this project uses the static
-   CRT deliberately so it should not.
+4. **PC**: Device Portal → *Apps* → add/register package. If the zip has a `dependencies\`
+   folder, install `Microsoft.VCLibs.x64.14.00.appx` **first** — the app links the DLL CRT
+   (`/MD` is mandatory with C++/CX, `/MT` fails with `D8016`), so the VC++ runtime must be
+   present before the app. Then select the `.msix`.
 5. **Console**: *Dev Home → app → View details → App type = Game* (App mode has a much
    smaller memory budget).
 6. Launch from *My games & apps* in the sandbox. Expect a moving colour for 15 s.
@@ -106,7 +107,7 @@ still present — so enabling the variable can never silently produce a broken p
 |---|---|
 | `Package.appxmanifest.in` | reviewed against the AppX schema and Microsoft's ATG Xbox samples |
 | `Package-Uwp.ps1` / `New-DevCert.ps1` | structurally validated here (here-strings, brace/paren balance); **not executed in this Linux sandbox** — first real run is the CI job |
-| `smoketest/*.vcxproj`, `App.cpp` | modelled on Microsoft's Xbox ATG UWP samples; compiled only on CI |
+| `smoketest/*.vcxproj`, `App.cpp` | modelled on Microsoft's Xbox ATG UWP samples; compiled only on CI. First CI run failed with `D8016` (`/MT` vs `/ZW`); the project now uses `/MD` and the packager ships VCLibs |
 | `SkyRecompUwp/*` | intentionally non-building scaffold (`PortBlocked.cpp`) |
 
 If CI fails, the failure will be in one of three places, in this order of likelihood:

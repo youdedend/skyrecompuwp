@@ -72,17 +72,21 @@
     <ClCompile>
       <PrecompiledHeader>Use</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
-      <LanguageStandard>stdcpp17</LanguageStandard>
+      <!-- No <LanguageStandard> on purpose: /ZW is incompatible with /std:c++17 and
+           /std:c++20 (D8016). C++/CX needs the default language mode. -->
       <WarningLevel>Level3</WarningLevel>
       <SDLCheck>true</SDLCheck>
       <CompileAsWinRT>true</CompileAsWinRT>
-      <!-- Static CRT: self-contained package, no Microsoft.VCLibs framework dependency.
-           Switch to MultiThreadedDLL + ship the VCLibs appx if you prefer /MD. -->
-      <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreaded</RuntimeLibrary>
-      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
+      <!-- The CRT MUST be the DLL runtime: C++/CX (/ZW) requires /MD(d). Using /MT here
+           fails with "cl : command line error D8016: '/MT' and '/ZW' command-line options
+           are incompatible" (see WindowsAppSDK docs, HybridCRT.md).
+           Consequence: the package depends on the Microsoft.VCLibs framework package, so
+           the deployment must install Microsoft.VCLibs.x64.14.00.appx alongside it.
+           Package-Uwp.ps1 ships that dependency in the zip. -->
+      <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreadedDLL</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebugDLL</RuntimeLibrary>
       <PreprocessorDefinitions>NDEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <PreprocessorDefinitions Condition="'$(Configuration)'=='Debug'">_DEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalOptions>/await %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
