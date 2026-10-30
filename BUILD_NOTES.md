@@ -272,9 +272,13 @@ runner**. That is what `xbox-uwp/` contains.
 
 ### What running the CI proves, and what it does not
 
-Proves: the manifest is accepted by `makeappx`, the package signs and verifies, the zip and
-checksums are produced, and — if you deploy it — that a self-signed package registers and runs
-on your console.
+**Status: green.** The smoke job builds with MSVC v143 on `windows-2022`, `makeappx` reports
+"Package creation succeeded", `signtool sign` and `verify /pa` pass, and the artifact
+`xbox-uwp-smoketest.zip` (~1.0 MB) is uploaded.
+
+Proves: the manifest is accepted by `makeappx`, the package signs and verifies, and the zip,
+the VCLibs dependency and the checksums are produced. It does **not** prove console behaviour —
+only deploying it to a Developer Mode console does that, and that step is yours.
 
 Does not prove: anything about the game running. The smoke app is not the runtime. It exists so
 that when the port lands, packaging is already a solved, boring step.

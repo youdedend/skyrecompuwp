@@ -106,14 +106,25 @@ still present — so enabling the variable can never silently produce a broken p
 | Piece | Status |
 |---|---|
 | `Package.appxmanifest.in` | reviewed against the AppX schema and Microsoft's ATG Xbox samples |
-| `Package-Uwp.ps1` / `New-DevCert.ps1` | structurally validated here (here-strings, brace/paren balance); **not executed in this Linux sandbox** — first real run is the CI job |
-| `smoketest/*.vcxproj`, `App.cpp` | modelled on Microsoft's Xbox ATG UWP samples; compiled only on CI. First CI run failed with `D8016` (`/MT` vs `/ZW`); the project now uses `/MD` and the packager ships VCLibs |
+| `Package-Uwp.ps1` / `New-DevCert.ps1` | **executed for real in CI and green**: makeappx, signtool sign and verify /pa all succeed |
+| `smoketest/*.vcxproj`, `App.cpp` | **compiles** with MSVC v143 on `windows-2022`; packaged, signed and verified. Four failures on the way there are tabulated below |
 | `SkyRecompUwp/*` | intentionally non-building scaffold (`PortBlocked.cpp`) |
 
-If CI fails, the failure will be in one of three places, in this order of likelihood:
-the UWP C++ toolset version on the image (the workflow retries `v142` automatically), an MSBuild
-property the SDK moved, or a WinRT type used in `App.cpp` that needs a namespace include.
-Paste the log and it can be fixed directly — none of those are architectural.
+### Verified build (CI)
+
+The workflow is green on `windows-2022`. Four failures on the way there, and what each taught:
+
+| Attempt | Failure | Fix |
+|---|---|---|
+| 1 | `D8016: '/MT' and '/ZW' are incompatible` | C++/CX requires the DLL CRT → `/MD`; packager now ships `dependencies\Microsoft.VCLibs.x64.14.00.appx` (install before the app) |
+| 1 | `/std:c++17` also incompatible with `/ZW` | removed `<LanguageStandard>` |
+| 2 | `C2065 'IDXGISwapChain1'/'IDXGIFactory2' undeclared`, cascading `ComPtr` errors | `<dxgi.h>` only declares up to `IDXGISwapChain`; switched to `<dxgi1_6.h>` + `<d3d11_3.h>`, with `<wrl.h>` guarded by `warning(disable:4467)` as the ATG samples do |
+| 2 | `C2679` assigning `Rect` to `Size` | `CoreWindow::Bounds` is a `Rect` |
+| 3 | `signtool verify`: "root certificate which is not trusted" | self-signed cert on a clean machine — trust it first (`certutil -addstore -f`) |
+| 4 | trust step **hung for 15 minutes** | `X509Store.Add` to `Root` raises a blocking dialog when headless; `certutil -addstore -f` is non-interactive |
+
+Result: `xbox-uwp-smoketest.zip`, ~1.0 MB, containing the signed `.msix`, the `.cer`, the
+VCLibs dependency, `INSTALL.md` and `SHA256SUMS.txt`.
 
 ## Licence / provenance
 
