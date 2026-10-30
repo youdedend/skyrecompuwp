@@ -109,6 +109,7 @@ jobs:
             -D_CRT_APP \
             -DSKYRECOMP_UWP=1 \
             -D_WIN32_WINNT=0x0A00 \
+            -D_CRT_SECURE_NO_WARNINGS \
             -DNOMINMAX \
             -DWIN32_LEAN_AND_MEAN \
             -D_AMD64_ -D_WIN64 \

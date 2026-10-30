@@ -31,14 +31,15 @@
 //      returning -1 ("no tracking: the renderer reads guest memory in place"), so that
 //      degradation is free. See PORT-BLUEPRINT.md section 3 for the pager work still to do.
 
-// The APP partition of the SDK's windows.h does not pull in everything the desktop partition
-// does, so the owners of the calls below are included explicitly. (Found by the first real
-// compile: GetCurrentPackagePathW, MoveFileA and AddVectoredExceptionHandler were undeclared.)
 #include <windows.h>
 
-#include <appmodel.h>        // GetCurrentPackagePathW, PACKAGE_*_MAX_LENGTH
-#include <errhandlingapi.h>  // AddVectoredExceptionHandler
-#include <fileapi.h>         // MoveFileA
+// Including the documented owners (<appmodel.h>, <errhandlingapi.h>, <fileapi.h>) does not help:
+// in the APP partition this SDK does not declare GetCurrentPackagePathW, MoveFileA or
+// AddVectoredExceptionHandler. The first two were removable, so they are gone - the paths come
+// from the activation host, and log rotation uses the CRT. This one cannot be: lazy commit of the
+// guest window hangs off a vectored exception handler, and every port that runs on the console
+// relies on them. The export exists in the UWP API surface; only the prototype is missing here.
+WINBASEAPI PVOID WINAPI AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler);
 
 #include <fcntl.h>
 #include <io.h>
@@ -74,9 +75,18 @@ static void resolve_paths(void) {
     g_paths_ready = true;
 
     // Package install location: read-only content, and the root for relative asset paths.
-    wchar_t wpath[MAX_PATH * 3];
-    UINT32 len = (UINT32)(sizeof wpath / sizeof *wpath);
-    if (SUCCEEDED(GetCurrentPackagePathW(&len, wpath))) utf8_from_wide(wpath, g_install_dir, sizeof g_install_dir);
+    // GetCurrentPackagePathW is not declared in the APP partition, so this comes from the
+    // activation host (Package.Current.InstalledLocation) or, failing that, from where this
+    // executable was loaded from - which for a packaged app is the install directory.
+    if (!g_install_dir[0]) {
+        char exe[MAX_PATH * 3];
+        DWORD n = GetModuleFileNameA(NULL, exe, (DWORD)sizeof exe);
+        if (n > 0 && n < sizeof exe) {
+            char *slash = strrchr(exe, '\\');
+            if (slash) *slash = 0;
+            snprintf(g_install_dir, sizeof g_install_dir, "%s", exe);
+        }
+    }
 
     // LocalState is normally supplied by the activation host from
     // ApplicationData.Current.LocalFolder.Path, which is the only exact source. The fallback
@@ -279,11 +289,13 @@ static void log_to_local_state(void) {
     char prev[MAX_PATH * 3];
     snprintf(prev, sizeof prev, "%s\\skyrecomp.prev.log", g_local_state);
     snprintf(g_log_path, sizeof g_log_path, "%s\\skyrecomp.log", g_local_state);
+    // rotate with the CRT: MoveFileA is not declared in the APP partition, and rename/remove are
+    // the same operation for two names in one directory.
     FILE *probe = fopen(g_log_path, "rb");
     if (probe) {
         fclose(probe);
-        DeleteFileA(prev);
-        MoveFileA(g_log_path, prev);
+        remove(prev);
+        rename(g_log_path, prev);
     }
 
     FILE *out = NULL;
