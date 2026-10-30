@@ -183,6 +183,14 @@ pwsh xbox-uwp/packaging/Package-Uwp.ps1 \
 Without it the package builds, installs, starts, says the package has no game code in it, and
 exits — and `INSTALL.md` inside the zip says the same thing.
 
+**Getting the game onto the console.** A USB stick, laid out as
+`<drive>:\<anything>\extracted\...`, is used directly as the data folder when it is writable:
+the runtime scans the drives at startup, and the log says exactly what it found and why it chose
+what it chose (`[usb] ...`, `[paths] data root: ...`). A read-only stick is reported and left
+alone; with no stick at all the data folder is LocalState, which the Device Portal can browse.
+The scan is also the measurement of what the `removableStorage` capability actually grants on a
+console — the first run with a stick plugged in answers it in one line.
+
 The artifact is `build-xbox-uwp/xbox-uwp.zip` + its SHA256 + `INSTALL.md`, `SHA256SUMS.txt` and the
 VCLibs dependency appx. **Developer Mode only**: the certificate is self-signed, so the console has
 to trust it, which Retail mode will not do.
