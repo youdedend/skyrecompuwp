@@ -280,6 +280,19 @@ Proves: the manifest is accepted by `makeappx`, the package signs and verifies, 
 the VCLibs dependency and the checksums are produced. It does **not** prove console behaviour —
 only deploying it to a Developer Mode console does that, and that step is yours.
 
+**Verified artifact** (CI run [#41037609285](https://github.com/youdedend/skyrecompuwp/actions/runs/41037609285), commit `7553180`):
+
+| | |
+|---|---|
+| Name | `xbox-uwp-smoketest.zip` |
+| Size | 1,083,048 bytes |
+| SHA256 | `bb64f58b158ba19e6b8aad914b3f618dca6b6f93f90b9d40e09f9fc3560ef2eb` |
+| Contents | signed `.msix`, `.cer`, `dependencies\Microsoft.VCLibs.x64.14.00.appx`, `INSTALL.md`, `SHA256SUMS.txt` |
+
+Note the distinction this document has kept throughout: that package is **the smoke test**, a
+~200-line D3D11 app. It is not SkyRecomp. There is still no `xbox-uwp.zip` for the game, and
+creating one is the port project in `XBOX-UWP-PORT-PLAN.md`.
+
 Does not prove: anything about the game running. The smoke app is not the runtime. It exists so
 that when the port lands, packaging is already a solved, boring step.
 

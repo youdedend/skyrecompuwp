@@ -123,8 +123,17 @@ The workflow is green on `windows-2022`. Four failures on the way there, and wha
 | 3 | `signtool verify`: "root certificate which is not trusted" | self-signed cert on a clean machine — trust it first (`certutil -addstore -f`) |
 | 4 | trust step **hung for 15 minutes** | `X509Store.Add` to `Root` raises a blocking dialog when headless; `certutil -addstore -f` is non-interactive |
 
-Result: `xbox-uwp-smoketest.zip`, ~1.0 MB, containing the signed `.msix`, the `.cer`, the
-VCLibs dependency, `INSTALL.md` and `SHA256SUMS.txt`.
+Result, from run [#41037609285](https://github.com/youdedend/skyrecompuwp/actions/runs/41037609285):
+
+| | |
+|---|---|
+| Artifact | `xbox-uwp-smoketest.zip` |
+| Size | 1,083,048 bytes |
+| SHA256 | `bb64f58b158ba19e6b8aad914b3f618dca6b6f93f90b9d40e09f9fc3560ef2eb` |
+| Contents | signed `SkyRecompUwpSmoke_1.0.0.0_x64.msix`, `SkyRecompUwpSmoke.cer`, `dependencies\Microsoft.VCLibs.x64.14.00.appx`, `INSTALL.md`, `SHA256SUMS.txt` |
+| Download | Actions → *Build Xbox UWP (Dev Mode)* → the run → Artifacts |
+
+That is a real, signed, deployable UWP package — of the smoke test, not of the game.
 
 ## Licence / provenance
 
