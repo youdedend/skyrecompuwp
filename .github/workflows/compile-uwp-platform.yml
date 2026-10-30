@@ -75,32 +75,49 @@ jobs:
         with:
           arch: x64
 
+      - name: Probe the toolchain
+        shell: bash
+        run: |
+          # Two things have bitten this step already, so both are measured rather than assumed:
+          #   1. whether MSYS (Git Bash) mangles /D-style arguments into Windows paths
+          #   2. whether clang-cl is on PATH at all
+          echo "MSYSTEM=${MSYSTEM:-unset}  shell=$BASH_VERSION"
+          echo "clang-cl: $(command -v clang-cl || echo MISSING)"
+          clang-cl --version 2>&1 | head -3
+          printf '#ifdef SKYRECOMP_UWP\nUWP_DEFINE_SEEN\n#else\nUWP_DEFINE_MISSING\n#endif\n' > probe.c
+          echo "--- /D form ---"
+          clang-cl /nologo /EP /DSKYRECOMP_UWP=1 probe.c 2>&1 | grep -E "UWP_DEFINE|error" || true
+          echo "--- -D form ---"
+          clang-cl -nologo -E -DSKYRECOMP_UWP=1 probe.c 2>&1 | grep -E "UWP_DEFINE|error" || true
+          rm -f probe.c
+
       - name: Syntax check uwp.c
         id: check
         shell: bash
+        env:
+          MSYS_NO_PATHCONV: '1'   # stop Git Bash rewriting /flags into C:/... paths
         run: |
           # GitHub runs bash with -e -o pipefail. A failing compiler must not abort the step
           # before the diagnostics are parsed, or the only trace is "exit code 1".
           set +e
-          PY=$(command -v python || command -v python3 || echo python)
-          echo "python: $PY"
+          # Dash-prefixed flags throughout: MSYS path conversion only rewrites arguments that
+          # start with a slash, and a silently dropped -DSKYRECOMP_UWP selects the wrong
+          # platform header - which is exactly what the first run of this job reported.
           # /fsyntax-only: parse and type-check in the UWP configuration, produce no object.
-          # The defines are the same set CMakeLists.txt uses, so this checks the configuration
-          # that matters rather than a desktop approximation of it.
-          clang-cl /nologo /fsyntax-only /W3 \
-            /DWINAPI_FAMILY=WINAPI_FAMILY_APP \
-            /D_CRT_APP \
-            /DSKYRECOMP_UWP=1 \
-            /D_WIN32_WINNT=0x0A00 \
-            /DNOMINMAX \
-            /DWIN32_LEAN_AND_MEAN \
-            /D_AMD64_ /D_WIN64 \
-            /I upstream/runtime \
+          clang-cl -nologo -fsyntax-only -W3 \
+            -DWINAPI_FAMILY=WINAPI_FAMILY_APP \
+            -D_CRT_APP \
+            -DSKYRECOMP_UWP=1 \
+            -D_WIN32_WINNT=0x0A00 \
+            -DNOMINMAX \
+            -DWIN32_LEAN_AND_MEAN \
+            -D_AMD64_ -D_WIN64 \
+            -I upstream/runtime \
             upstream/runtime/platform/uwp.c > diag.txt 2>&1
           status=$?
           echo "clang-cl exit: $status"
           echo "status=$status" >> "$GITHUB_OUTPUT"
-          cat diag.txt
+          head -60 diag.txt
           exit 0
 
       - name: Report diagnostics as annotations
