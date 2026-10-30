@@ -185,7 +185,12 @@ jobs:
           Get-ChildItem $env:OUT_DIR -File | Format-Table Name, Length -AutoSize
           $zip = Join-Path $env:OUT_DIR 'xbox-uwp-smoketest.zip'
           if (-not (Test-Path $zip)) { throw "Artifact not produced: $zip" }
-          Write-Host "SHA256: $((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower())"
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $zip).Length
+          Write-Host "SHA256: $hash"
+          # ::notice is not exposed through the checks API; ::warning is. This makes the
+          # checksum verifiable without fetching the blob-hosted job log.
+          Write-Host "::warning title=Xbox UWP smoke package::sha256=$hash size=$size"
 
       - name: Upload package
         uses: actions/upload-artifact@v4
