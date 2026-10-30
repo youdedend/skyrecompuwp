@@ -429,8 +429,12 @@ of it has been executed. Grep for the marker.
    piece of section 7 — is not needed: there is no window and no surface. What must work is the
    event queue, gamepads, sensors, audio and timing. Size it by building it, not by estimating.
 5. **Build FFmpeg (LGPL) and shaderc for UWP**, static.
-6. **Two-stage packaging**: `make gen && make` on the PC, then the CMake project, then
-   `Package-Uwp.ps1` with `skygame.dll` + `skygame.dll.id` in the layout.
+6. ~~`Package-Uwp.ps1` with `skygame.dll` + `skygame.dll.id` in the layout~~ **Done** —
+   `-GameDir` stages both at the package root (where `LoadPackagedLibrary` looks), refuses a
+   package whose `.id` is missing or malformed, and refuses to pretend: without the switch the
+   package is labelled a smoke test in `INSTALL.md` and in the artifact's `has_game_code` output.
+   What still has to happen is the first half of that sentence: `make gen && make` on a PC with
+   the game files set up, then the CMake project.
 7. **First frame on the console**, then the memory pager if and when the budget bites.
 
 Steps 1–5 all need a Windows machine with the UWP workload. They can run on GitHub Actions

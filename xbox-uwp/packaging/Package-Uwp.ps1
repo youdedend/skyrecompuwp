@@ -54,6 +54,11 @@ param(
     [string]$IconLabel    = "",
     [string]$CertPfx      = "",
     [string]$CertPassword = "",
+    # The folder where `make gen && make` on a PC left skygame.dll and skygame.dll.id. Both are
+    # required: gamelib.c reads the .id without loading the library, to decide whether the game code
+    # in the package was built for this runtime. Without this switch the package is a smoke test -
+    # it starts, says "this package has no game code in it", and exits.
+    [string]$GameDir      = "",
     # The app links the DLL CRT (/MD is mandatory with C++/CX), so the Microsoft.VCLibs
     # framework package has to be installed on the console before the app. Leave empty to
     # auto-locate it in the Windows SDK ExtensionSDKs; the packager ships it in the zip.
@@ -140,6 +145,36 @@ Get-ChildItem -Path $LayoutDir -Recurse -File | Where-Object {
 $exePath = Join-Path $stage $Executable
 if (-not (Test-Path $exePath)) { throw "Executable '$Executable' is not in the layout ($LayoutDir). Contents: $(Get-ChildItem $LayoutDir -Name | Select-Object -First 20)" }
 Write-Host "payload: $LayoutDir -> $stage"
+
+# ---------------------------------------------------------------- game code
+# The recompiled game is a second module inside the package: an AppContainer loads only DLLs that
+# are part of it, and only by a bare name from the package root (runtime/gamelib.c). So it goes in
+# here, at the top level, next to the .exe - not in a subfolder.
+Write-Section "Game code"
+$hasGameCode = $false
+$gameId = ""
+if ($GameDir) {
+    if (-not (Test-Path $GameDir)) { throw "GameDir does not exist: $GameDir" }
+    $libPath = Join-Path $GameDir "skygame.dll"
+    $idPath  = "$libPath.id"
+    if (-not (Test-Path $libPath)) {
+        throw "skygame.dll is not in GameDir ($GameDir). Build it there first: run "make gen" then "make" in a source checkout, with the game files set up."
+    }
+    if (-not (Test-Path $idPath)) {
+        throw "skygame.dll.id is not in GameDir ($GameDir). gamelib.c reads it (without loading the DLL) to check the game code matches this runtime; without it every load fails with "built for another game"."
+    }
+    $gameId = (Get-Content -LiteralPath $idPath -Raw).Trim()
+    if ($gameId -notmatch '^[0-9A-Za-z._-]+$') {
+        throw "skygame.dll.id does not contain a single id token: '$gameId'"
+    }
+    Copy-Item -LiteralPath $libPath -Destination (Join-Path $stage "skygame.dll") -Force
+    Copy-Item -LiteralPath $idPath  -Destination (Join-Path $stage "skygame.dll.id") -Force
+    $libMb = [math]::Round((Get-Item $libPath).Length / 1MB, 1)
+    Write-Host "skygame.dll    : $libMb MB, id '$gameId'"
+    $hasGameCode = $true
+} else {
+    Write-Warning "No -GameDir: this package contains NO game code. It will start, report that the package has no game code in it, and exit. Pass -GameDir <folder with skygame.dll + skygame.dll.id> to make an installable game."
+}
 
 # ---------------------------------------------------------------- manifest
 
@@ -335,6 +370,9 @@ $DisplayName - Xbox UWP package (Developer Mode sideloading only)
 Contents
   $msixName$(if ($cerOut) { "`n  $PackageName.cer      signing certificate - trust this on the console first" })$(if ($vclibsName) { "`n  dependencies\$vclibsName`n                        VC++ runtime framework - install BEFORE the app" })
 
+Game code
+$(if ($hasGameCode) { "  included: skygame.dll, built from your own game files (id $gameId)" } else { "  NOT INCLUDED - this is a smoke test. It starts, says the package has no game" + "`n  code in it, and exits. Re-package with -GameDir to get a playable build." })
+
 This package is signed with a self-signed certificate. It cannot be installed in
 Retail mode, and it cannot be installed on a console that does not trust the
 certificate.
@@ -379,4 +417,5 @@ if ($env:GITHUB_OUTPUT) {
     "artifact=$zipPath"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
     "sha256=$zipHash"       | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
     "msix=$msixPath"        | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+    "has_game_code=$($hasGameCode.ToString().ToLower())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 }
