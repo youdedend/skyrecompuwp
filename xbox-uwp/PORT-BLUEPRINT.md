@@ -220,6 +220,12 @@ is maintenance debt for as long as upstream refuses WinRT.
 **Revised estimate: 1.5–3 weeks**, not the 3–5 days previously written, and it now sits on the
 critical path ahead of the first frame rather than beside it.
 
+**Superseded again, by section 4b of `port/PORT-INVENTORY.md`:** the console presents through a
+D3D12 `CreateSwapChainForCoreWindow` over a shared Vulkan image, so there is no window and no
+Vulkan surface, and **the video backend is not needed at all**. What remains is SDL3's event
+queue, joysticks, sensors, audio and timing built for the APP partition. The 1.5–3 week figure
+above describes work this port no longer has to do.
+
 ---
 
 ## 7. Packaging and signing, exactly as the ports do it

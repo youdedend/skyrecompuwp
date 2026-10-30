@@ -224,6 +224,54 @@ Two consequences, both load-bearing:
 
 ---
 
+## 4b. Rendering: there is no Vulkan surface on Xbox
+
+The blueprint assumed the renderer would keep its Vulkan swapchain and get a surface from SDL.
+Going to the source of the port that runs on a console says otherwise — `Cosmo/gow3_xbox`,
+`xbox/graphics/present_bridge.cpp`:
+
+```cpp
+factory->CreateSwapChainForCoreWindow(queue, window.Get(), &desc, nullptr, &chain);   // D3D12
+VkExternalMemoryImageCreateInfo  external{ .handleTypes = eD3D12Resource };
+VkExportMemoryAllocateInfo       export_info{ .handleTypes = eD3D12Resource };
+auto exported = device.getMemoryWin32HandleKHR({ .memory, .handleType = eD3D12Resource });
+native->OpenSharedHandle(exported, IID_PPV_ARGS(&source));                           // D3D12 resource
+```
+
+No `VkSurfaceKHR`, no `VkSwapchainKHR`, no `vkAcquireNextImageKHR`, no `vkQueuePresentKHR`
+anywhere in their presenter: `image_count = 1`, `Acquire()`/`Present()` are their own semaphore
+wrappers. A frame is one `CopyResource` into the back buffer, then `Present`.
+
+An AppContainer has no HWND, so this is not a preference — there is no Vulkan WSI surface to
+create in the first place.
+
+**What that means for this port.** SkyRecomp's entire present path is five call sites in one file:
+
+| `runtime/nvn/vulkan/device.c` | today | on Xbox |
+|---|---|---|
+| 776 | `SDL_CreateWindow` | not created: the host owns the CoreWindow |
+| 785 | `SDL_Vulkan_CreateSurface` | no surface |
+| 320 | `vkCreateSwapchainKHR` | one shared image, `uwp_present_attach_vulkan_image` |
+| 394, 398 | `vkAcquireNextImageKHR` | always the same image |
+| 467 | `vkQueuePresentKHR` | `uwp_present_frame` |
+
+`platform/uwp_present.{h,cpp}` is the D3D12 half and is written and gated; it takes an NT handle
+from the renderer, which is what keeps it free of Vulkan headers. The renderer half — creating
+the image with `VK_KHR_external_memory_win32` and redirecting those five sites — is patch 0006
+and is not written yet. Dozen has to expose `VK_KHR_external_memory`,
+`VK_KHR_external_memory_win32` and `VK_KHR_dedicated_allocation`; gow3 calling
+`vkGetMemoryWin32HandleKHR` on the console is the evidence that it does.
+
+**Consequence for SDL, and it is a large one.** With no window and no surface, the SDL *video*
+driver is off the critical path entirely. The runtime still uses SDL for the event queue,
+gamepads, gyro, audio streams and timing (219 distinct symbols), but those are the joystick,
+sensor, audio and timer subsystems — not `src/video/winrt/`. That turns the dependency from
+"port SDL2's WinRT app model and video backend into SDL3" into "build SDL3 for the APP partition,
+minus video, and patch what breaks", which is a different order of effort. It has not been
+verified by building SDL3 that way; that is the next thing to measure, not to assume.
+
+---
+
 ## 5. Design change: file I/O has to be brokered
 
 Upstream uses POSIX file APIs throughout, which map onto UWP fine **as long as the paths are
@@ -324,6 +372,7 @@ the memory limit is a fraction of the 5,120 MiB budget.
 | `uwp.c` **compiles** | **yes** — clang-cl `/fsyntax-only`, `WINAPI_FAMILY_APP` + `_CRT_APP` + `SKYRECOMP_UWP`, run `41052945145` green, 0 diagnostics |
 | `uwp.c` and `uwp_entry.cpp` **compile** | **yes** — clang-cl and `cl /ZW` in CI, run `41056498090` green |
 | `uwp.c` **runs on a console** | **no — never run** |
+| `uwp_present.cpp` **compiles** | **yes** — clang-cl, run `41057398636` green |
 | Dozen/SDL3/FFmpeg link | **no — none of them built for UWP yet** |
 
 The first real compile has now happened, and it was worth having: six errors and five
@@ -349,8 +398,9 @@ of it has been executed. Grep for the marker.
    waits on the SDL3 WinRT backend (step 4), which is what will own the window.
 3. **Build Dozen** (`vulkan_dzn.dll`) and `dxil.dll` for UWP. Fork of Mesa, `-Dvulkan-drivers=
    microsoft`, D3D12, DXIL 1.7. Largest single task.
-4. **Port SDL2's WinRT backend into SDL3** and build it for UWP (section 7). Largest task after
-   Dozen, and on the critical path for a first frame.
+4. **Build SDL3 for the APP partition without video** (section 4b). The video backend — the large
+   piece of section 7 — is not needed: there is no window and no surface. What must work is the
+   event queue, gamepads, sensors, audio and timing. Size it by building it, not by estimating.
 5. **Build FFmpeg (LGPL) and shaderc for UWP**, static.
 6. **Two-stage packaging**: `make gen && make` on the PC, then the CMake project, then
    `Package-Uwp.ps1` with `skygame.dll` + `skygame.dll.id` in the layout.
