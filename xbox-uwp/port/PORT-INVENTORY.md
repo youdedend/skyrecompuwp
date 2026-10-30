@@ -21,6 +21,8 @@ that no amount of patching removes.
 | 9 | Mesa Dozen + `dxil.dll` | dependency to build | analysed, not built |
 | 10 | SDL3 + SDL2's WinRT backend ported in | dependency to build | analysed, not built |
 | 11 | Entry host, CMake project, CI compile gate | new files | host **compiles** in CI; project never configured |
+| 12 | `uwp_present.cpp` — D3D12 CoreWindow swapchain | new file | **compiles** in CI; never run |
+| 13 | `uwp_vk_present.c` — shared Vulkan image, ownership | new file | **compiles** in CI; never run |
 
 ---
 
@@ -255,10 +257,20 @@ create in the first place.
 | 394, 398 | `vkAcquireNextImageKHR` | always the same image |
 | 467 | `vkQueuePresentKHR` | `uwp_present_frame` |
 
-`platform/uwp_present.{h,cpp}` is the D3D12 half and is written and gated; it takes an NT handle
-from the renderer, which is what keeps it free of Vulkan headers. The renderer half — creating
-the image with `VK_KHR_external_memory_win32` and redirecting those five sites — is patch 0006
-and is not written yet. Dozen has to expose `VK_KHR_external_memory`,
+Both halves are written and gated:
+
+* `platform/uwp_present.{h,cpp}` — the D3D12 side. Takes an NT handle, so it stays free of Vulkan
+  headers.
+* `platform/uwp_vk_present.{h,c}` — the Vulkan side. Creates the image and its exportable
+  dedicated allocation, exports the handle, and moves ownership in and out of D3D12 with explicit
+  barriers (`begin` / `end`). Each barrier is its own submission with its own fence rather than a
+  semaphore threaded through the renderer's timeline.
+* The host hands the CoreWindow over in `SetWindow`, which is the moment it exists.
+
+Still missing is **patch 0006**: redirecting the five call sites in `device.c` onto
+`uwp_vk_present_begin` / `uwp_vk_present_end`, and replacing the surface queries in
+`create_swapchain()` (capabilities, formats, present modes) with the fixed R8G8B8A8_UNORM single
+image. That patch is the point where the renderer starts drawing into the bridge. Dozen has to expose `VK_KHR_external_memory`,
 `VK_KHR_external_memory_win32` and `VK_KHR_dedicated_allocation`; gow3 calling
 `vkGetMemoryWin32HandleKHR` on the console is the evidence that it does.
 
@@ -372,7 +384,8 @@ the memory limit is a fraction of the 5,120 MiB budget.
 | `uwp.c` **compiles** | **yes** — clang-cl `/fsyntax-only`, `WINAPI_FAMILY_APP` + `_CRT_APP` + `SKYRECOMP_UWP`, run `41052945145` green, 0 diagnostics |
 | `uwp.c` and `uwp_entry.cpp` **compile** | **yes** — clang-cl and `cl /ZW` in CI, run `41056498090` green |
 | `uwp.c` **runs on a console** | **no — never run** |
-| `uwp_present.cpp` **compiles** | **yes** — clang-cl, run `41057398636` green |
+| `uwp_present.cpp`, `uwp_vk_present.c` **compile** | **yes** — clang-cl, run `41058121314` green |
+| the bridge **works on a device** | **no** — external memory, the ownership transfers and the copy are all unexercised |
 | Dozen/SDL3/FFmpeg link | **no — none of them built for UWP yet** |
 
 The first real compile has now happened, and it was worth having: six errors and five
