@@ -24,6 +24,8 @@ that no amount of patching removes.
 | 12 | `uwp_present.cpp` — D3D12 CoreWindow swapchain | new file | **compiles** in CI; never run |
 | 12b | **patch 0006** — `device.c` onto the bridge | 82-line patch, 6 guarded regions | applies cleanly; **not compiled** |
 | 13 | `uwp_vk_present.c` — shared Vulkan image, ownership | new file | **compiles** in CI; never run |
+| 14 | `uwp_posix/{pthread,dirent,unistd,strings,dlfcn}.h` — POSIX headers MSVC lacks | 5 headers, 372 lines | **compiles** in CI |
+| 15 | **patch 0007** — `romfs_build.c` hard links | 23-line patch | **compiles** in CI |
 
 ---
 
@@ -425,7 +427,9 @@ of it has been executed. Grep for the marker.
    waits on the SDL3 WinRT backend (step 4), which is what will own the window.
 3. **Build Dozen** (`vulkan_dzn.dll`) and `dxil.dll` for UWP. Fork of Mesa, `-Dvulkan-drivers=
    microsoft`, D3D12, DXIL 1.7. Largest single task.
-4. **Build SDL3 for the APP partition without video** (section 4b). The video backend — the large
+4. **Build SDL3 3.4.x for the APP partition without video** (section 4b). The version floor is
+   not a preference: `device.c`'s screenshot path calls `SDL_SavePNG`, which does not exist in
+   3.2 — the compiler said so, out loud, the first time the renderer was compiled. The video backend — the large
    piece of section 7 — is not needed: there is no window and no surface. What must work is the
    event queue, gamepads, sensors, audio and timing. Size it by building it, not by estimating.
 5. **Build FFmpeg (LGPL) and shaderc for UWP**, static.

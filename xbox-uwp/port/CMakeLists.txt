@@ -132,7 +132,13 @@ target_link_options(skyrecomp_uwp PRIVATE /WINMD)
 
 set_source_files_properties(${SKY_UI_SRC} PROPERTIES LANGUAGE CXX)
 
+# The POSIX headers MSVC does not have (<pthread.h>, <dirent.h>, <unistd.h>, <strings.h>,
+# <dlfcn.h>), implemented over Win32 in runtime/platform/uwp_posix. FIRST on the include path, and
+# with angle-bracket includes from sixteen files, the only way to intercept them is to be ahead of
+# the toolchain's own -I. They are deliberately not copied into runtime/: the upstream tree stays
+# as upstream wrote it, and the shim is a layer the port owns.
 target_include_directories(skyrecomp_uwp PRIVATE
+    "${CMAKE_CURRENT_LIST_DIR}/runtime/platform/uwp_posix"
     "${SKY_ROOT}/runtime" "${SKY_ROOT}/runtime/nvn"
     "${SKY_ROOT}/third_party/imgui" "${SKY_ROOT}/third_party/imgui/backends"
     "${SKY_SDL3_SOURCE}/include"

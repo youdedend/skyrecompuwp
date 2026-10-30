@@ -73,7 +73,11 @@ jobs:
           cp port/xbox-uwp/port/runtime/platform/uwp_present.cpp upstream/runtime/platform/uwp_present.cpp
           cp port/xbox-uwp/port/runtime/platform/uwp_vk_present.h  upstream/runtime/platform/uwp_vk_present.h
           cp port/xbox-uwp/port/runtime/platform/uwp_vk_present.c  upstream/runtime/platform/uwp_vk_present.c
-          ls -l upstream/runtime/platform/
+          # The POSIX headers MSVC lacks, as a directory: CMakeLists.txt puts it first on the
+          # include path, so <pthread.h> and friends resolve to these and not to the toolchain's.
+          mkdir -p upstream/runtime/platform/uwp_posix
+          cp port/xbox-uwp/port/runtime/platform/uwp_posix/*.h upstream/runtime/platform/uwp_posix/
+          ls -l upstream/runtime/platform/ upstream/runtime/platform/uwp_posix/
 
       - name: Fetch Vulkan headers
         shell: bash
@@ -229,6 +233,50 @@ jobs:
           grep -v 'unused during compilation' renderer-diag.txt | tail -40
           echo "status=$status" >> "$GITHUB_OUTPUT"
 
+      - name: Compile the runtime's POSIX consumers against the shims
+        id: wall
+        shell: bash
+        run: |
+          # <pthread.h>, <dirent.h>, <unistd.h>, <strings.h>, <dlfcn.h> are the whole of what MSVC
+          # lacks for this runtime (measured by compiling every translation unit the CMake project
+          # lists, then throwing away the ones that only failed for a missing third-party header).
+          # Each file here is a real consumer of one of them, and each is compiled for the console
+          # configuration with the shim directory first on the include path - so a shim that does
+          # not compile, or that omits a call site's function, fails here rather than at link time
+          # on a console that cannot tell you why.
+          set +e
+          dep="$PWD"
+          : > wall-diag.txt
+          status=0
+          for f in \
+              runtime/kernel.c \
+              runtime/dispatch.c \
+              runtime/paths.c \
+              runtime/mods.c \
+              runtime/romfs_build.c \
+              runtime/rando.c \
+              runtime/hle/pl.c \
+              runtime/gamelib.c \
+              runtime/nvn/custom_tex.c \
+              runtime/nvn/texpatch.c ; do
+            # hle/movie.c is the same shape but needs the FFmpeg headers; it is left to the real
+            # build, where FFmpeg is a dependency anyway.
+            [ -f "upstream/$f" ] || { echo "missing $f" >> wall-diag.txt; status=1; continue; }
+            ( cd upstream && python -m ziglang cc \
+                -target x86_64-windows-gnu -std=gnu11 -c -o "$dep/wall.o" \
+                -DSKYRECOMP_UWP=1 -DWINAPI_FAMILY=WINAPI_FAMILY_APP -D_CRT_APP \
+                -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -O0 -Wno-unused-command-line-argument \
+                -Iruntime/platform/uwp_posix -Iruntime -Iruntime/nvn -Iruntime/nvn/vulkan \
+                -I"$dep/vkheaders/include" -I"$dep/sdl3/include" -I"$dep/vma/include" \
+                "$f" ) >> wall-diag.txt 2>&1
+            if [ $? -ne 0 ]; then
+              echo "::warning file=$f::does not compile against the UWP POSIX shims"
+              status=1
+            fi
+          done
+          grep -v 'unused during compilation' wall-diag.txt | tail -40
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
       - name: Report diagnostics as annotations
         if: always()
         shell: bash
@@ -244,6 +292,10 @@ jobs:
           if [ -f renderer-diag.txt ]; then
             $PY port/xbox-uwp/port/annotate-diagnostics.py renderer-diag.txt \
                 --root upstream --status "${{ steps.renderer.outputs.status }}"
+          fi
+          if [ -f wall-diag.txt ]; then
+            $PY port/xbox-uwp/port/annotate-diagnostics.py wall-diag.txt \
+                --root upstream --status "${{ steps.wall.outputs.status }}"
           fi
           exit 0
 
@@ -263,8 +315,12 @@ jobs:
             echo "::error::the patched runtime/nvn/vulkan/device.c does not compile for the console (see annotations)"
             fail=1
           fi
+          if [ "${{ steps.wall.outputs.status }}" != "0" ]; then
+            echo "::error::the runtime does not compile against the UWP POSIX shims (see annotations)"
+            fail=1
+          fi
           [ "$fail" = "0" ] || exit 1
-          echo "uwp.c, uwp_entry.cpp and the patched device.c all compile in the UWP configuration"
+          echo "uwp.c, uwp_entry.cpp, the patched device.c and the POSIX shims' consumers all compile"
 
       - name: Upload the raw diagnostics
         if: always()
@@ -275,5 +331,6 @@ jobs:
             diag.txt
             entry-diag.txt
             renderer-diag.txt
+            wall-diag.txt
           if-no-files-found: ignore
           retention-days: 14

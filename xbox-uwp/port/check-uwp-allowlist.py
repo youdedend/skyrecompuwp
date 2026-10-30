@@ -43,6 +43,9 @@ FORBIDDEN = {
     "ShellExecuteExA": ("shell / process launch", "hard"),
     "ShellExecuteExW": ("shell / process launch", "hard"),
     "WinExec": ("process launch", "hard"),
+    # file-system features outside the AppContainer's API partition
+    "CreateHardLinkA": ("hard link (desktop API partition)", "hard"),
+    "CreateHardLinkW": ("hard link (desktop API partition)", "hard"),
     "system": ("process launch via CRT", "hard"),
     "popen": ("process launch via CRT", "hard"),
     # dynamic loading from arbitrary paths (LoadPackagedLibrary is the allowed form)
@@ -269,8 +272,14 @@ def scan(root: str, excludes=()):
             except OSError:
                 continue
             code = strip_comments(raw)
+            # GetProcAddress is only a concern when it pairs with an arbitrary load. Paired with
+            # LoadPackagedLibrary - which can only reach inside the package - it is the normal way
+            # to get an export, and flagging it would train the reader to ignore this report.
+            packaged_load = re.search(r"\bLoadPackagedLibrary\s*\(", code) is not None
             for lineno, line in live_lines(code):
                 for api, (reason, severity) in FORBIDDEN.items():
+                    if api == "GetProcAddress" and packaged_load:
+                        continue
                     if re.search(r"\b" + re.escape(api) + r"\s*\(", line):
                         findings.append({
                             "file": rel, "line": lineno, "api": api,
