@@ -271,7 +271,23 @@ if (-not $SkipSign) {
     & $signtool sign /fd SHA256 /f $CertPfx /p $CertPassword /a $msixPath
     if ($LASTEXITCODE -ne 0) { throw "signtool failed with exit code $LASTEXITCODE" }
     & $signtool verify /pa /all $msixPath
-    if ($LASTEXITCODE -ne 0) { throw "signtool verify failed with exit code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) {
+        throw ("signtool verify failed with exit code $LASTEXITCODE. " +
+               "A 'root certificate which is not trusted' result means the signing " +
+               "certificate is not trusted on this machine; on a build machine add it to " +
+               "Cert:\CurrentUser\TrustedPeople (and Root) first.")
+    }
+
+    # The package only deploys if the signing certificate's subject matches the manifest
+    # Identity/@Publisher exactly. A mismatch fails on the console with 0x80073CF3 and is
+    # otherwise very hard to read from the deployment error.
+    $sig = Get-AuthenticodeSignature -FilePath $msixPath
+    $actualPublisher = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject.Trim() } else { '' }
+    if ($actualPublisher -ine $Publisher.Trim()) {
+        throw "Publisher mismatch: manifest says '$Publisher' but the package is signed as '$actualPublisher'. The console would reject this with 0x80073CF3."
+    }
+    Write-Host "publisher OK: $actualPublisher"
+    Write-Host "status      : $($sig.Status)" 
 
     # Export the public certificate (the .cer the console has to trust).
     # signtool has no "export" verb, so this is done with the .NET certificate API.

@@ -119,6 +119,26 @@ jobs:
               -OutDir $env:OUT_DIR `
               -Password $env:CERT_PASSWORD
 
+      - name: Trust the dev certificate on this ephemeral runner
+        shell: powershell
+        run: |
+          # signtool verify /pa validates the Authenticode chain, so a self-signed cert fails
+          # with "terminated in a root certificate which is not trusted" on a clean machine.
+          # This runner is thrown away after the job, and the certificate is generated in the
+          # previous step, so trusting it here only affects this build. Nothing is exported
+          # to the artifact beyond the public .cer the console needs anyway.
+          $ErrorActionPreference = 'Stop'
+          $cer = Join-Path $env:OUT_DIR 'SkyRecompUwp.cer'
+          if (-not (Test-Path $cer)) { throw "Expected certificate not found: $cer" }
+          $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $cer
+          foreach ($name in @('TrustedPeople', 'Root')) {
+              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($name, 'CurrentUser')
+              $store.Open('ReadWrite')
+              $store.Add($cert)
+              $store.Close()
+              Write-Host "trusted in CurrentUser\$name : $($cert.Subject)"
+          }
+
       - name: Package (makeappx + signtool + zip)
         shell: powershell
         run: |
