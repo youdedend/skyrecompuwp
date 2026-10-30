@@ -1,0 +1,215 @@
+name: Release Xbox UWP
+
+# Builds the signed Xbox UWP smoke package and attaches it to a GitHub Release.
+#
+#   gh workflow run release-xbox-uwp.yml -f tag=v0.1.0        (manual)
+#   git push origin v0.1.0                                   (tag)
+#
+# IMPORTANT - what this release IS and IS NOT:
+#   IS  : a real, signed, installable UWP package (Developer Mode / Xbox Series X|S) that
+#         proves the packaging pipeline works. CI registers it with Add-AppxPackage and
+#         asserts Status=Ok on every run.
+#   IS  : NOT the game. There is no ported SkyRecomp runtime in this repository, so no
+#         xbox-uwp.zip containing the game exists or can exist yet. See BUILD_NOTES.md
+#         section 4 and XBOX-UWP-PORT-PLAN.md.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to create/update (e.g. v0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-xbox-uwp-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  OUT_DIR: build-xbox-uwp
+  CERT_PASSWORD: skyrecomp-ci
+
+jobs:
+  release:
+    name: Build, sign, publish
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Resolve tag
+        id: rel
+        shell: powershell
+        run: |
+          $tag = if ('${{ inputs.tag }}' -ne '') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
+          if (-not $tag) { throw 'Could not determine a tag.' }
+          Write-Host "tag=$tag"
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Report toolchain
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+              -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -Directory |
+              Select-Object -ExpandProperty Name
+
+      - name: Build smoke test
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+              -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          $log = Join-Path $env:RUNNER_TEMP 'msbuild.log'
+          $builtWith = $null
+          foreach ($toolset in @('v143', 'v142')) {
+              & $msbuild xbox-uwp\smoketest\SkyRecompUwpSmoke.vcxproj `
+                  /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=$toolset `
+                  /m /v:minimal /nologo 2>&1 | Tee-Object -FilePath $log
+              if ($LASTEXITCODE -eq 0) { $builtWith = $toolset; break }
+          }
+          if (-not $builtWith) {
+              Select-String -Path $log -Pattern 'error [A-Z]+[0-9]+|error MSB[0-9]+' -ErrorAction SilentlyContinue |
+                  Select-Object -First 15 | ForEach-Object {
+                      Write-Host "::error title=MSBuild::($($_.Line.Trim() -replace '%','%25'))"
+                  }
+              throw 'MSBuild failed for every candidate PlatformToolset'
+          }
+          Write-Host "built with $builtWith"
+
+      - name: Create developer certificate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\xbox-uwp\packaging\New-DevCert.ps1 -Publisher 'CN=SkyRecomp Dev' `
+              -OutDir $env:OUT_DIR -Password $env:CERT_PASSWORD
+
+      - name: Trust the certificate on this ephemeral runner
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cer = Join-Path $env:OUT_DIR 'SkyRecompUwp.cer'
+          & certutil.exe -addstore -f Root $cer
+          & certutil.exe -addstore -f TrustedPeople $cer
+
+      - name: Package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '0.1.0.0'
+          & .\xbox-uwp\packaging\Package-Uwp.ps1 `
+              -LayoutDir    'xbox-uwp\smoketest\x64\Release' `
+              -PackageName  'SkyRecompUwpSmoke' `
+              -IdentityName 'SkyRecomp.UwpSmoke' `
+              -DisplayName  'Sky Recomp UWP Smoke' `
+              -Executable   'SkyRecompUwpSmoke.exe' `
+              -EntryPoint   'SkyRecompUwpSmoke.App' `
+              -Version      $version `
+              -IconSource   'xbox-uwp\assets\app-icon.png' `
+              -IconLabel    'SR' `
+              -ArtifactName 'xbox-uwp-smoketest' `
+              -OutputDir    $env:OUT_DIR `
+              -CertPfx      "$env:OUT_DIR\SkyRecompUwp.pfx" `
+              -CertPassword $env:CERT_PASSWORD
+
+      - name: Verify it installs
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:OUT_DIR '_zip'
+          $dep = Get-ChildItem -Path $stage -Recurse -Filter 'Microsoft.VCLibs*.appx' -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          if ($dep) { Add-AppxPackage -Path $dep.FullName }
+          $msix = Get-ChildItem -Path $stage -Filter '*.msix' | Select-Object -First 1
+          Add-AppxPackage -Path $msix.FullName
+          $pkg = Get-AppxPackage -Name 'SkyRecomp.UwpSmoke'
+          if (-not $pkg) { throw 'Package did not register.' }
+          if ($pkg.Status -ne 'Ok') { throw "Status is $($pkg.Status), not Ok." }
+          Write-Host "registered $($pkg.PackageFullName) status=$($pkg.Status)"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.rel.outputs.tag }}
+          name: Xbox UWP smoke package ${{ steps.rel.outputs.tag }}
+          draft: false
+          prerelease: true
+          fail_on_unmatched_files: true
+          body: |
+            ## What this is
+
+            A real, signed, **installable** UWP package for Xbox Series X|S in **Developer Mode**.
+            It is a packaging proof, not the game.
+
+            CI built it, signed it, and then installed it through Windows' own deployment stack
+            (`Add-AppxPackage`) on every run, asserting `Status = Ok`. If that assertion failed,
+            this release would not exist.
+
+            **It is not SkyRecomp.** There is no ported runtime in this repository, so a
+            `xbox-uwp.zip` containing the game does not exist and cannot exist yet. See
+            `BUILD_NOTES.md` section 4 and `XBOX-UWP-PORT-PLAN.md`.
+
+            ## What the smoke app does
+
+            Clears the screen to a slowly shifting colour for 15 seconds, then exits. Press
+            Back/Escape to leave sooner. Its only job is to prove that a package signed with a
+            self-signed certificate registers and launches on your console.
+
+            ## Install
+
+            1. Console in Developer Mode; open the Xbox Device Portal
+               (*Dev Home → Settings → Remote Access*), normally `https://<console-ip>:11443`.
+            2. Trust `SkyRecompUwpSmoke.cer` on the console (untrusted signer = `0x800B0109`).
+            3. Install `Microsoft.VCLibs.x64.14.00.appx` from `dependencies/` **first** —
+               the app links the DLL CRT, which C++/CX requires.
+            4. Register `SkyRecompUwpSmoke_0.1.0.0_x64.msix`.
+            5. *Dev Home → the app → View details → App type = Game*.
+            6. Launch from *My games & apps* in the sandbox. Expect ~15 s of moving colour.
+
+            Verify the download against `SHA256SUMS.txt` inside the zip.
+
+            ## Not retail mode
+
+            Developer Mode sideloading only. Never retail.
+
+            ## No game files
+
+            Nothing here contains or distributes game assets, keys, or decryption tooling.
+            Upstream SkyRecomp requires the user's own legally obtained *Skyward Sword HD*
+            v1.0.0 files.
+          files: |
+            build-xbox-uwp/xbox-uwp-smoketest.zip
+            build-xbox-uwp/SkyRecompUwpSmoke.cer
+
+      - name: Summary
+        shell: powershell
+        run: |
+          $zip = Join-Path $env:OUT_DIR 'xbox-uwp-smoketest.zip'
+          if (Test-Path $zip) {
+            $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+            $size = (Get-Item $zip).Length
+            Write-Host "::warning title=Released::${{ steps.rel.outputs.tag }} sha256=$hash size=$size"
+            @"
+            ### Released: ${{ steps.rel.outputs.tag }}
+
+            | | |
+            |---|---|
+            | Asset | ``xbox-uwp-smoketest.zip`` |
+            | Size | $size bytes |
+            | SHA256 | ``$hash`` |
+
+            Verified installed on this runner (`Add-AppxPackage`, `Status = Ok`).
+            Developer Mode only. This is the smoke test, not the game.
+            "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
