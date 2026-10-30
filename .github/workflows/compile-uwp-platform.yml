@@ -334,6 +334,49 @@ jobs:
           echo "compiled=$ok" >> "$GITHUB_OUTPUT"
           echo "failed=$bad" >> "$GITHUB_OUTPUT"
 
+      - name: Build and run the POSIX shim self-test
+        id: selftest
+        shell: bash
+        run: |
+          # A shim that compiles proves the signatures, not the behaviour. This is a Win32 program,
+          # so mingw builds it and the runner executes it natively: mutex mutual exclusion,
+          # pthread_once under eight racing threads, a 256 MiB stack request, cond_wait waking on
+          # signal, cond_timedwait returning ETIMEDOUT rather than hanging, usleep sleeping, and
+          # opendir returning the entries the call sites were written against.
+          set +e
+          dep="$PWD"
+          : > selftest.txt
+          ( cd upstream && python -m ziglang cc -target x86_64-windows-gnu -std=gnu11 -O1 \
+              -DSKYRECOMP_UWP=1 -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX \
+              -Iruntime/platform/uwp_posix -Iruntime \
+              "$dep/port/xbox-uwp/port/tools/uwp-posix-selftest.c" -o "$dep/selftest.exe" ) >> selftest.txt 2>&1
+          build=$?
+          if [ "$build" -ne 0 ]; then
+            echo "self-test does not build" >> selftest.txt
+            cat selftest.txt
+            echo "status=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ./selftest.exe >> selftest.txt 2>&1
+          run=$?
+          cat selftest.txt
+          echo "status=$run" >> "$GITHUB_OUTPUT"
+
+      - name: AppContainer allowlist gate
+        id: allowlist
+        shell: bash
+        run: |
+          # The claim every summary makes - "zero forbidden API calls in the tree the console build
+          # actually compiles" - until now depended on somebody remembering to run the script. The
+          # build compiles uwp.c *instead of* windows.c, so the check does the same substitution
+          # before it looks.
+          set +e
+          cp upstream/runtime/platform/uwp.c upstream/runtime/platform/windows.c
+          python port/xbox-uwp/port/check-uwp-allowlist.py upstream/runtime --fail > allowlist.txt 2>&1
+          rc=$?
+          cat allowlist.txt
+          echo "status=$rc" >> "$GITHUB_OUTPUT"
+
       - name: Report diagnostics as annotations
         if: always()
         shell: bash
@@ -376,6 +419,14 @@ jobs:
             echo "::error::the runtime does not compile against the UWP POSIX shims (see annotations)"
             fail=1
           fi
+          if [ "${{ steps.selftest.outputs.status }}" != "0" ]; then
+            echo "::error::the POSIX shims do not behave as the runtime expects (see the self-test output)"
+            fail=1
+          fi
+          if [ "${{ steps.allowlist.outputs.status }}" != "0" ]; then
+            echo "::error::forbidden AppContainer API calls found (see the allowlist report)"
+            fail=1
+          fi
           if [ "${{ steps.sweep.outputs.status }}" != "0" ]; then
             echo "::error::a translation unit stopped compiling for the console: ${{ steps.sweep.outputs.failed }} failed, ${{ steps.sweep.outputs.compiled }} passed (see the build report artifact)"
             fail=1
@@ -394,5 +445,7 @@ jobs:
             renderer-diag.txt
             wall-diag.txt
             sweep.txt
+            selftest.txt
+            allowlist.txt
           if-no-files-found: ignore
           retention-days: 14

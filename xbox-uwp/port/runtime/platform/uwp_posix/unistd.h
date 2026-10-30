@@ -28,9 +28,10 @@ static inline int usleep(unsigned usec) {
     return 0;
 }
 
-// GetCurrentProcessId rather than _getpid: the UCRT has the latter in <process.h>, msvcrt and
-// mingw disagree about which header declares it, and this call costs nothing either way.
-static inline int getpid(void) { return (int)GetCurrentProcessId(); }
+// getpid is deliberately not here. Nothing in the runtime calls it (census: zero call sites), and
+// both UCRT and mingw already declare it in <process.h> - so defining it was a conflict waiting for
+// the first translation unit that pulled that header in. A shim should not shadow a function the
+// platform already provides; the self-test found this one.
 
 #ifdef __cplusplus
 }
