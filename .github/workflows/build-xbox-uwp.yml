@@ -1,0 +1,236 @@
+name: Build Xbox UWP (Dev Mode)
+
+# Produces a signed, Xbox Developer Mode sideload package from xbox-uwp/.
+#
+# Two things are built:
+#
+#   1. smoketest  - ALWAYS. A tiny D3D11 C++/CX UWP app. It exists so this pipeline is
+#                   proven end to end (manifest -> makeappx -> signtool -> zip) and so
+#                   you can verify that a self-signed package actually deploys on your
+#                   console before any porting work exists.
+#
+#   2. runtime    - ONLY when the repository variable ENABLE_UWP_RUNTIME_BUILD is 'true'.
+#                   That project currently raises an explicit #error (PortBlocked.cpp)
+#                   because the SkyRecomp runtime has no D3D12 backend, no UWP platform
+#                   layer, and cannot fit the 5,120 MiB Xbox UWP memory budget.
+#                   See BUILD_NOTES.md section 4.
+#
+# The toolchain is GitHub's windows-2022 image: VS 2022 (v143) with the Universal Windows
+# Platform C++ workload, and Windows SDK 10.0.26100.0.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'xbox-uwp/**'
+      - '.github/workflows/build-xbox-uwp.yml'
+  pull_request:
+    paths:
+      - 'xbox-uwp/**'
+      - '.github/workflows/build-xbox-uwp.yml'
+
+permissions:
+  contents: read
+
+env:
+  # Keep every build in one predictable place, same name as the local convention.
+  OUT_DIR: build-xbox-uwp
+  CERT_PASSWORD: skyrecomp-ci
+
+jobs:
+  smoketest:
+    name: Build + package smoke test
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Report toolchain
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "== msbuild"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+          & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+              -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          Write-Host "== SDKs"
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -Directory |
+              Select-Object -ExpandProperty Name
+          Write-Host "== makeappx"
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter makeappx.exe |
+              Where-Object FullName -match '\\x64\\' | Select-Object -First 1 -ExpandProperty FullName
+
+      - name: Build smoke test (MSBuild, Release|x64)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+              -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild not found on this runner' }
+
+          # The UWP C++ toolset ships per-version. Prefer v143 (VS 2022 default), fall back
+          # to v142 if this image only carries the older UWP toolset. Which one worked is
+          # printed, so the log never leaves the toolchain ambiguous.
+          $builtWith = $null
+          foreach ($toolset in @('v143', 'v142')) {
+              Write-Host "== attempting PlatformToolset=$toolset"
+              & $msbuild xbox-uwp\smoketest\SkyRecompUwpSmoke.vcxproj `
+                  /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=$toolset `
+                  /m /v:minimal /nologo
+              if ($LASTEXITCODE -eq 0) { $builtWith = $toolset; break }
+              Write-Warning "PlatformToolset=$toolset failed with exit code $LASTEXITCODE"
+          }
+          if (-not $builtWith) { throw 'MSBuild failed for every candidate PlatformToolset' }
+          Write-Host "== built with PlatformToolset=$builtWith"
+          "TOOLSET=$builtWith" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          $exe = 'xbox-uwp\smoketest\x64\Release\SkyRecompUwpSmoke.exe'
+          if (-not (Test-Path $exe)) { throw "Expected build output missing: $exe" }
+          Get-Item $exe | Format-List Name, Length
+
+      - name: Create developer certificate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\xbox-uwp\packaging\New-DevCert.ps1 `
+              -Publisher 'CN=SkyRecomp Dev' `
+              -OutDir $env:OUT_DIR `
+              -Password $env:CERT_PASSWORD
+
+      - name: Package (makeappx + signtool + zip)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\xbox-uwp\packaging\Package-Uwp.ps1 `
+              -LayoutDir    'xbox-uwp\smoketest\x64\Release' `
+              -PackageName  'SkyRecompUwpSmoke' `
+              -IdentityName 'SkyRecomp.UwpSmoke' `
+              -DisplayName  'Sky Recomp UWP Smoke' `
+              -Executable   'SkyRecompUwpSmoke.exe' `
+              -EntryPoint   'SkyRecompUwpSmoke.App' `
+              -Version      '1.0.0.0' `
+              -IconSource   'xbox-uwp\assets\app-icon.png' `
+              -IconLabel    'SR' `
+              -ArtifactName 'xbox-uwp-smoketest' `
+              -OutputDir    $env:OUT_DIR `
+              -CertPfx      "$env:OUT_DIR\SkyRecompUwp.pfx" `
+              -CertPassword $env:CERT_PASSWORD
+
+      - name: Inspect the produced package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem $env:OUT_DIR -File | Format-Table Name, Length -AutoSize
+          $zip = Join-Path $env:OUT_DIR 'xbox-uwp-smoketest.zip'
+          if (-not (Test-Path $zip)) { throw "Artifact not produced: $zip" }
+          Write-Host "SHA256: $((Get-FileHash $zip -Algorithm SHA256).Hash.ToLower())"
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: xbox-uwp-smoketest
+          path: |
+            build-xbox-uwp/xbox-uwp-smoketest.zip
+            build-xbox-uwp/SkyRecompUwp.cer
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Job summary
+        if: always()
+        shell: powershell
+        run: |
+          $zip = Join-Path $env:OUT_DIR 'xbox-uwp-smoketest.zip'
+          if (Test-Path $zip) {
+            $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+            $size = (Get-Item $zip).Length
+            @"
+          ### Xbox UWP smoke package
+
+          | | |
+          |---|---|
+          | Artifact | ``xbox-uwp-smoketest.zip`` |
+          | Size | $size bytes |
+          | SHA256 | ``$hash`` |
+
+          Signed with a freshly generated self-signed certificate
+          (``SkyRecompUwp.cer`` is in the same artifact). Trust that certificate on the
+          console before deploying. Developer Mode only.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          } else {
+            'No package was produced - see the build log above.' |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+  runtime:
+    name: Package ported runtime (gated)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    # Off unless someone deliberately flips it after the port actually lands.
+    if: ${{ vars.ENABLE_UWP_RUNTIME_BUILD == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sanity check the gate
+        shell: powershell
+        run: |
+          # If this step runs, someone enabled the gate. It must mean PortBlocked.cpp is gone,
+          # otherwise the build below is going to fail with the intentional #error.
+          if (Test-Path 'xbox-uwp\SkyRecompUwp\PortBlocked.cpp') {
+            throw 'ENABLE_UWP_RUNTIME_BUILD is true but PortBlocked.cpp still exists. The runtime port has not started; disable the variable.'
+          }
+
+      - name: Build runtime (MSBuild, Release|x64)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+              -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          $builtWith = $null
+          foreach ($toolset in @('v143', 'v142')) {
+              & $msbuild xbox-uwp\SkyRecompUwp\SkyRecompUwp.vcxproj `
+                  /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=$toolset `
+                  /m /v:minimal /nologo
+              if ($LASTEXITCODE -eq 0) { $builtWith = $toolset; break }
+              Write-Warning "PlatformToolset=$toolset failed with exit code $LASTEXITCODE"
+          }
+          if (-not $builtWith) { throw 'MSBuild failed for every candidate PlatformToolset' }
+          Write-Host "== built with PlatformToolset=$builtWith"
+
+      - name: Create developer certificate
+        shell: powershell
+        run: |
+          & .\xbox-uwp\packaging\New-DevCert.ps1 -OutDir $env:OUT_DIR -Password $env:CERT_PASSWORD
+
+      - name: Package (makeappx + signtool + zip)
+        shell: powershell
+        run: |
+          & .\xbox-uwp\packaging\Package-Uwp.ps1 `
+              -LayoutDir    'xbox-uwp\SkyRecompUwp\x64\Release' `
+              -PackageName  'SkyRecompUwp' `
+              -IdentityName 'SkyRecomp.Uwp' `
+              -DisplayName  'Sky Recomp' `
+              -Executable   'SkyRecompUwp.exe' `
+              -EntryPoint   'SkyRecompUwp.App' `
+              -Version      '1.0.0.0' `
+              -IconSource   'xbox-uwp\assets\app-icon.png' `
+              -ArtifactName 'xbox-uwp' `
+              -OutputDir    $env:OUT_DIR `
+              -CertPfx      "$env:OUT_DIR\SkyRecompUwp.pfx" `
+              -CertPassword $env:CERT_PASSWORD
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: xbox-uwp
+          path: build-xbox-uwp/xbox-uwp.zip
+          if-no-files-found: error

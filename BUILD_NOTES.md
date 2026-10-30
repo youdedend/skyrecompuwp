@@ -1,6 +1,11 @@
 # BUILD_NOTES — Xbox UWP package attempt (SkyRecomp)
 
-**Status: NO `xbox-uwp.zip` WAS PRODUCED. This is an audit + blocker report, not a successful build.**
+**Status: NO `xbox-uwp.zip` WAS PRODUCED. This is an audit + blocker report plus a packaging scaffold, not a successful build.**
+
+> The packaging half now exists and is testable: see `xbox-uwp/` and the CI workflow
+> `.github/workflows/build-xbox-uwp.yml`, which builds and signs a small D3D11 UWP smoke
+> package (`xbox-uwp-smoketest.zip`) on `windows-2022`. What does not exist is the ported game
+> runtime. The four blockers in §4 are unchanged.
 
 Reason in one sentence: the repository has **no Xbox/UWP target at all** — no AppxManifest, no Visual Studio/MSIX project, no D3D12 renderer, no Xbox GDK usage, no UWP build instructions, and no prebuilt `xbox-uwp.zip` in Releases or CI artifacts. Its only documented Windows build is a **Win32 desktop .exe built with MSYS2 UCRT64 clang + Vulkan**, which cannot run on an Xbox (consoles have no Vulkan and UWP apps cannot use the desktop Win32 API surface).
 
@@ -231,9 +236,52 @@ signtool verify /pa /all /v .\pkg\*.msix
 
 See `XBOX-UWP-PORT-PLAN.md` in this repo for the file-by-file work breakdown. Short version: this is a **port project measured in weeks**, not a build. The critical path is a D3D12 backend for `runtime/nvn/` (replacing 6.4k lines of Vulkan), a UWP platform layer replacing `runtime/platform/windows.c`, a pre-baked (no runtime compiler) game-library flow, a memory budget that fits 5,120 MiB, and MSIX packaging + signing — all on a Windows 11 host with VS 2022 and the Windows SDK.
 
-## 8. Decisions I need from you
+## 8. What was decided and built
 
-1. Do you want me to **scaffold the UWP/MSIX project** (manifest, capability set, packaging script, CI workflow) so the packaging side is ready and testable the moment a D3D12 backend exists? That is real, reviewable work I can do now.
-2. Do you have a **Windows 11 build host** (or a GitHub Actions Windows runner) you want me to target? Every real step needs one; this Linux sandbox cannot build or package UWP.
-3. Is a **fork/branch with Xbox work** the intended source (e.g. someone else's UWP branch)? Give me the URL and I will audit and build that instead.
-4. Or was `xbox-uwp.zip` expected to be a **desktop→Xbox wrapper** (it cannot work: no full-trust/desktop bridge exists in Xbox Dev Mode), in which case: no.
+You chose: **scaffold the packaging side now**, targeting a **GitHub Actions windows-latest
+runner**. That is what `xbox-uwp/` contains.
+
+### Delivered
+
+| File | Purpose | Verified here |
+|---|---|---|
+| `xbox-uwp/manifest/Package.appxmanifest.in` | Xbox manifest: `Windows.Xbox` + `Windows.Desktop` device families, x64, no full-trust capability, DPI-independent tile assets | XML well-formedness; placeholders cross-checked against the packager |
+| `xbox-uwp/packaging/New-DevCert.ps1` | self-signed code-signing cert whose Subject becomes the manifest Publisher | structural check only (no PowerShell on the audit host) |
+| `xbox-uwp/packaging/Package-Uwp.ps1` | stage → render manifest → generate tile/splash PNGs → `makepri` → `makeappx` → `signtool sign` + `verify` → `SHA256SUMS.txt` + `INSTALL.md` → zip | structural check; every SDK tool resolved explicitly; manifest-token coverage asserted |
+| `xbox-uwp/smoketest/` | ~200-line D3D11 C++/CX UWP app (`CoreApplication::Run` + `IFrameworkView`, auto-exit after 15 s) | modelled on Microsoft's Xbox ATG UWP samples; compiled only by CI |
+| `xbox-uwp/SkyRecompUwp/` | intended runtime project, gated | deliberately fails: `PortBlocked.cpp` raises `#error` naming the four blockers |
+| `.github/workflows/build-xbox-uwp.yml` | two jobs: `smoketest` (always) and `runtime` (only when repo variable `ENABLE_UWP_RUNTIME_BUILD=true`, and it fails fast if `PortBlocked.cpp` is still present) | YAML parsed; step structure and shell declarations checked |
+
+### Toolchain the CI uses, with evidence
+
+- Runner: `windows-2022` → Visual Studio 2022 17.14 with `Microsoft.VisualStudio.Workload.Universal`,
+  `Microsoft.VisualStudio.ComponentGroup.UWP.VC.v142`, and **Windows SDKs 10.0.22621.0 and 10.0.26100.0**
+  (verified against `actions/runner-images` `Windows2022-Readme.md`).
+- The projects pin `WindowsTargetPlatformVersion=10.0.26100.0` and can be overridden with
+  `/p:WindowsTargetPlatformVersion=...`.
+- The workflow tries `PlatformToolset=v143`, falls back to `v142`, and prints which one worked —
+  the image lists the v142 UWP toolset explicitly, so the build cannot be left hostage to that detail.
+- Static CRT (`/MT`) on purpose: no `Microsoft.VCLibs` framework dependency to deploy alongside.
+
+### What running the CI proves, and what it does not
+
+Proves: the manifest is accepted by `makeappx`, the package signs and verifies, the zip and
+checksums are produced, and — if you deploy it — that a self-signed package registers and runs
+on your console.
+
+Does not prove: anything about the game running. The smoke app is not the runtime. It exists so
+that when the port lands, packaging is already a solved, boring step.
+
+### Two bugs found by the packaging checks, worth knowing about
+
+1. `signtool` has no `export` verb; certificates are now exported with the .NET certificate API.
+2. A `{{TOKENS}}` mention inside an XML comment in the manifest template would have tripped the
+   packager's un-replaced-placeholder guard at runtime. The guard is strict on purpose; the
+   comment was rewritten.
+
+### Honest limitation
+
+This audit host is Linux: no PowerShell, no MSVC, no Windows SDK. The PowerShell scripts were
+validated structurally (here-strings, brace/paren balance, tool resolution, token coverage) but
+have **never been executed**. The first real execution is the CI job. If it fails, it will fail
+in the packaging layer, not the architecture, and the log will say exactly where.
