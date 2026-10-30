@@ -158,10 +158,10 @@ if ($GameDir) {
     $libPath = Join-Path $GameDir "skygame.dll"
     $idPath  = "$libPath.id"
     if (-not (Test-Path $libPath)) {
-        throw "skygame.dll is not in GameDir ($GameDir). Build it there first: run "make gen" then "make" in a source checkout, with the game files set up."
+        throw "skygame.dll is not in GameDir ($GameDir). Build it there first: run 'make gen' then 'make' in a source checkout, with the game files set up."
     }
     if (-not (Test-Path $idPath)) {
-        throw "skygame.dll.id is not in GameDir ($GameDir). gamelib.c reads it (without loading the DLL) to check the game code matches this runtime; without it every load fails with "built for another game"."
+        throw "skygame.dll.id is not in GameDir ($GameDir). gamelib.c reads it (without loading the DLL) to check the game code matches this runtime; without it every load fails with 'built for another game'."
     }
     $gameId = (Get-Content -LiteralPath $idPath -Raw).Trim()
     if ($gameId -notmatch '^[0-9A-Za-z._-]+$') {
