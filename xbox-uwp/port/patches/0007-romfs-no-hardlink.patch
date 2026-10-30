@@ -1,0 +1,23 @@
+diff --git a/runtime/romfs_build.c b/runtime/romfs_build.c
+index 330ad60..684934e 100644
+--- a/runtime/romfs_build.c
++++ b/runtime/romfs_build.c
+@@ -257,13 +257,17 @@ fail:
+ static bool copy_file(const char *src, const char *dst, uint64_t size, uint64_t *done, uint64_t total,
+                       void (*progress)(uint64_t, uint64_t)) {
+     remove(dst);
+ #ifdef __APPLE__
+     if (clonefile(src, dst, 0) == 0) goto linked;  // (APFS: a copy-on-write clone, instant)
+ #endif
+-#ifdef _WIN32
++#if defined(SKYRECOMP_UWP)
++    // No hard links on the console: CreateHardLink is in the desktop API partition, so it is not
++    // even declared in a UWP build. Nothing is lost - the links above are a shortcut for copying a
++    // game folder that is already on the same volume, and the copy loop below is the real path.
++#elif defined(_WIN32)
+     if (CreateHardLinkA(dst, src, NULL)) goto linked;  // (same NTFS volume: a hard link)
+ #else
+     if (link(src, dst) == 0) goto linked;  // (same volume: a hard link)
+ #endif
+     {
+         FILE *in = fopen(src, "rb"), *out = in ? fopen(dst, "wb") : NULL;

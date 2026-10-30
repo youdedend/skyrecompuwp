@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifest for the REAL SkyRecomp UWP port (not the smoke test).
+
+  This template follows the two shipping Dev Mode ports in this space
+  (Cosmo/gow3_xbox, JYRS20/WWHD-UWP) rather than the smoke-test manifest, because they
+  differ in ways that matter on console. See ../PORT-BLUEPRINT.md section 7.
+
+  Deliberate differences from manifest/Package.appxmanifest.in (the smoke test):
+
+    Windows.Universal          both ports use this, not Windows.Xbox. Works in Dev Mode,
+                               installs on PC too, which makes testing far cheaper.
+    Microsoft.VCLibs 140.00    declared as a PackageDependency instead of shipping the appx
+                               for manual install. The deployment stack resolves it before
+                               the app registers, so users cannot get the order wrong.
+    codeGeneration             required for generated/loaded code paths (gow3 uses it).
+    removableStorage           read the user's own game files from USB.
+    extendedExecutionUnconstrained
+                               a game must not be suspended mid-frame (WWHD uses it).
+                               Restricted capability: accepted in Dev Mode, NOT for retail
+                               without approval. If it ever blocks deployment, remove it and
+                               handle CoreApplication::Suspending explicitly instead.
+
+  Not included on purpose:
+    - broadFileSystemAccess: not available on console. Use DevelopmentFiles + FolderPicker.
+    - rescap:runFullTrust: not permitted on Xbox at all.
+    - File type associations: SkyRecomp consumes a folder (romfs/ + exefs/), not single
+      files, so a FolderPicker is the right contract. Add associations only if that changes.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="{{IDENTITY_NAME}}"
+    Publisher="{{PUBLISHER}}"
+    Version="{{VERSION}}"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>{{DISPLAY_NAME}}</DisplayName>
+    <PublisherDisplayName>{{PUBLISHER_DISPLAY}}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+    <PackageDependency
+      Name="Microsoft.VCLibs.140.00"
+      MinVersion="14.0.33519.0"
+      Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="{{EXECUTABLE}}" EntryPoint="{{ENTRYPOINT}}">
+      <uap:VisualElements
+        DisplayName="{{DISPLAY_NAME}}"
+        Description="{{DESCRIPTION}}"
+        BackgroundColor="#101010"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square310x310Logo="Assets\Square310x310Logo.png">
+          <uap:ShowNameOnTiles>
+            <uap:ShowOn Tile="square150x150Logo" />
+          </uap:ShowNameOnTiles>
+        </uap:DefaultTile>
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#101010" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <Capability Name="codeGeneration" />
+    <uap:Capability Name="removableStorage" />
+    <rescap:Capability Name="extendedExecutionUnconstrained" />
+  </Capabilities>
+</Package>

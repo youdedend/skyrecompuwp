@@ -1,0 +1,130 @@
+# Audit command log — 2026-10-30 (UTC)
+
+Every command that informed `BUILD_NOTES.md`. No build was started; no system packages were installed.
+
+## 1. Identify the session repo (empty stub)
+
+```
+$ git -C /home/user/skyrecompuwp log --oneline -5
+ab988e1 Initial commit
+$ git -C /home/user/skyrecompuwp ls-files
+README.md                      # 1 line: "# skyrecompuwp"
+```
+
+## 2. Locate and clone the real source
+
+```
+$ git ls-remote https://github.com/Apolinario-coder/SkyRecomp
+f005a619b1732376ac355243cc5b30e2ccc89ca9  HEAD
+f005a619b1732376ac355243cc5b30e2ccc89ca9  refs/heads/main
+$ git clone --filter=blob:none --no-checkout https://github.com/Apolinario-coder/SkyRecomp /home/user/.scratch-skyrecomp
+$ git checkout main
+$ git rev-parse HEAD
+f005a619b1732376ac355243cc5b30e2ccc89ca9
+$ git log -1 --format='date=%cI subject=%s'
+date=2026-10-29T19:43:29-03:00 subject=Merge pull request #77 from BlAnK182C-bak/feat/gyro
+```
+
+## 3. Look for any Xbox/UWP support
+
+```
+$ grep -rniE 'xbox|uwp|xgame|GDK|devmode|Dev Mode|AppxManifest' --exclude-dir=.git --exclude-dir=third_party .
+README.md:27:  ...modern gamepads (Xbox, DualSense/DualShock, Nintendo Pro Controller)...
+runtime/hle/bindings.c:57: // fam: 0 Nintendo (and pads SDL doesn't name), 1 Xbox, 2 PlayStation
+runtime/hle/input.c:199:   case SDL_GAMEPAD_TYPE_XBOX360: case SDL_GAMEPAD_TYPE_XBOXONE: f = 1; break;
+runtime/nvn/texpatch.c:1038: if (style == STYLE_XBOX) { ... }        # button-prompt artwork only
+
+$ find . -iname '*appxmanifest*' -o -iname '*.wapproj' -o -iname '*.msix*'
+(no matches outside third_party/imgui examples)
+
+$ ls CMakeLists.txt CMakePresets.json
+ls: cannot access 'CMakeLists.txt': No such file or directory
+
+$ ls docs/
+120-fps-validation.md  BUILD-linux.md  BUILD-macos.md  diagnostics.md  game-files.md
+icon/  mouse-controls.md  pr-integration.md  releases/  render-fixes-validation.md
+repository-layout.md  texture-packs.md  video-review.md          # no BUILD-windows.md
+
+$ grep -rliE 'd3d12|d3d11|dxgi|d3dcompiler' runtime/ tools/
+(no matches)                                        # no Direct3D backend exists
+```
+
+## 4. Prebuilt package check
+
+```
+$ curl -sSL https://api.github.com/repos/Apolinario-coder/SkyRecomp/releases?per_page=100
+9 releases: v1.0.1-beta, v1.0.2, v1.0.3, v1.0.4, v1.0.5, v1.0.6, v2.0.0, v2.0.1, v2.0.2
+assets per release: AppImage / Linux.tar.gz / Linux.zip / macOS.dmg / macOS.zip / Windows.zip
+-> no xbox-uwp.zip, no .msix/.appx/.appxbundle/.msixbundle, no AppxManifest
+
+$ gh api "repos/Apolinario-coder/SkyRecomp/actions/artifacts?per_page=100"
+total artifacts: 0
+
+$ gh run list --repo Apolinario-coder/SkyRecomp --limit 15
+Build & Upload Releases -> jobs: build-linux, build-linux-appimage, build-macos
+Source checks           -> python hygiene only
+
+$ gh api "repos/Apolinario-coder/SkyRecomp/forks?per_page=100"
+30+ forks, none advertising an Xbox/UWP port
+$ gh search repos "skyrecomp" ; gh search repos "lasrecomp"
+no Xbox/UWP fork
+
+$ gh search issues --repo Apolinario-coder/SkyRecomp "uwp"
+(no results)
+```
+
+Asset digest metadata (desktop Windows asset, not a UWP package):
+
+```
+SkyRecomp-v2.0.2-Windows.zip
+  size=1881203900
+  digest=sha256:5d8dd9158d44b005759a0c6d061febcc148ff29b820e6eb85a4ac5ead3898e0f
+```
+
+Direct asset download attempted for verification:
+
+```
+$ curl -sL -r <tail> -o tail.bin https://github.com/.../SkyRecomp-v2.0.2-Windows.zip
+curl: (35) SSL connect error        # redirect target objects.githubusercontent.com unreachable from sandbox
+```
+
+## 5. Bindings of the documented (non-UWP) build
+
+```
+$ grep -nE 'uname|PLATFORM|MINGW' Makefile | head
+5: UNAME := $(shell uname -s)
+7: ifneq ($(filter MINGW% MSYS% CYGWIN% Windows_NT,$(UNAME) $(OS)),)
+8: PLATFORM := windows
+9: else ifeq ($(UNAME),Linux)
+
+$ grep -n 'LDFLAGS  :=' -A3 Makefile        # windows branch
+LDFLAGS := -fuse-ld=lld -Wl,--stack,16777216 ... -lSDL3 -lvulkan-1 -lwinmm -lole32
+           -lshell32 -lcomdlg32 -luuid -lshaderc_shared
+           $(if $(RELEASE),-Wl,--subsystem,windows)
+
+$ wc -l runtime/nvn/vulkan/*.c runtime/nvn/vulkan/*.cpp runtime/nvn/vulkan/*.h
+6452 total                                  # Vulkan backend that Xbox cannot run
+
+$ grep -oE 'CreateProcessW|CreateJobObjectW|VirtualAlloc' runtime/platform/windows.c | sort | uniq -c
+4 CreateProcessW
+$ grep -n 'zig' runtime/gamebuild.c | head
+106: char cc[1100];  // compiler: zig (as `zig cc`), or LARECOMP_CC / clang
+138: ... rt_resource("zig" SEP "zig" ...) t->zig = true;
+```
+
+## 6. Sandbox capability probe
+
+```
+$ uname -a        -> Linux e2b.local 6.1.158+ x86_64 GNU/Linux (Debian 12)
+$ for t in clang clang++ gcc make cmake ninja python3 git wine msbuild makensis \
+           x86_64-w64-mingw32-gcc zip 7z; do command -v $t; done
+gcc, make, python3, git, zip only
+$ ls /c/ ; find / -iname '*Windows Kits*' -o -iname 'makeappx*'
+(absent: no Windows SDK, no MSVC, no MSIX tooling, no Xbox GDK)
+```
+
+## 7. External corroboration (console constraints)
+
+- Xbox UWP graphics: Direct3D only — D3D11 FL10.0/11.0 and D3D12 FL11.0 + SM 6.4, no Agility SDK on console (`walbourn.github.io/directx-and-uwp-on-xbox-one/`).
+- Xbox Dev Mode UWP memory ceiling: 5,120 MiB unified RAM+VRAM in Game resource mode (`JulianDr14/jadyx`, `PrismFox67/Eden-UWP` docs; WindowsForum coverage).
+- mingw-w64 cannot build the app package for UWP (MSVC `store` libs required; mingw only ships `winstorecompat`/`windowsappcompat` stubs) — mingw-w64-public mailing list, 2025.

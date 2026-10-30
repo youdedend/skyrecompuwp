@@ -1,0 +1,22 @@
+diff --git a/runtime/platform.h b/runtime/platform.h
+index 090ff43..5183585 100644
+--- a/runtime/platform.h
++++ b/runtime/platform.h
+@@ -3,13 +3,17 @@
+ #pragma once
+ #include <stdbool.h>
+ #include <stddef.h>
+ #include <stdint.h>
+ 
+ #ifdef _WIN32
++#if defined(SKYRECOMP_UWP)
++#include "platform/uwp_compat.h"  // UWP: MSVC/UCRT, no mingw headers (see the file's header comment)
++#else
+ #include "platform/win_compat.h"
++#endif
+ #elif defined(__linux__)
+ #include "platform/linux_compat.h"
+ #endif
+ 
+ #ifdef __cplusplus
+ extern "C" {

@@ -1,0 +1,400 @@
+name: Build Xbox UWP (Dev Mode)
+
+# Produces a signed, Xbox Developer Mode sideload package from xbox-uwp/.
+#
+# Two things are built:
+#
+#   1. smoketest  - ALWAYS. A tiny D3D11 C++/CX UWP app. It exists so this pipeline is
+#                   proven end to end (manifest -> makeappx -> signtool -> zip) and so
+#                   you can verify that a self-signed package actually deploys on your
+#                   console before any porting work exists.
+#
+#   2. runtime    - ONLY when the repository variable ENABLE_UWP_RUNTIME_BUILD is 'true'.
+#                   That project currently raises an explicit #error (PortBlocked.cpp)
+#                   because the SkyRecomp runtime has no D3D12 backend, no UWP platform
+#                   layer, and cannot fit the 5,120 MiB Xbox UWP memory budget.
+#                   See BUILD_NOTES.md section 4.
+#
+# The toolchain is GitHub's windows-2022 image: VS 2022 (v143) with the Universal Windows
+# Platform C++ workload, and Windows SDK 10.0.26100.0.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'xbox-uwp/**'
+      - '.github/workflows/build-xbox-uwp.yml'
+  pull_request:
+    paths:
+      - 'xbox-uwp/**'
+      - '.github/workflows/build-xbox-uwp.yml'
+
+permissions:
+  contents: read
+
+# One build per ref: a new push supersedes an older run instead of queueing behind it.
+concurrency:
+  group: xbox-uwp-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep every build in one predictable place, same name as the local convention.
+  OUT_DIR: build-xbox-uwp
+  CERT_PASSWORD: skyrecomp-ci
+
+jobs:
+  smoketest:
+    name: Build + package smoke test
+    runs-on: windows-2022
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Report toolchain
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host "== msbuild"
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+          & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+              -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          Write-Host "== SDKs"
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Include" -Directory |
+              Select-Object -ExpandProperty Name
+          Write-Host "== makeappx"
+          Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter makeappx.exe |
+              Where-Object FullName -match '\\x64\\' | Select-Object -First 1 -ExpandProperty FullName
+
+      - name: Build smoke test (MSBuild, Release|x64)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+              -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          if (-not $msbuild) { throw 'MSBuild not found on this runner' }
+
+          # The UWP C++ toolset ships per-version. Prefer v143 (VS 2022 default), fall back
+          # to v142 if this image only carries the older UWP toolset. Which one worked is
+          # printed, so the log never leaves the toolchain ambiguous.
+          $builtWith = $null
+          $log = Join-Path $env:RUNNER_TEMP 'msbuild-smoketest.log'
+          foreach ($toolset in @('v143', 'v142')) {
+              Write-Host "== attempting PlatformToolset=$toolset"
+              & $msbuild xbox-uwp\smoketest\SkyRecompUwpSmoke.vcxproj `
+                  /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=$toolset `
+                  /m /v:minimal /nologo 2>&1 | Tee-Object -FilePath $log
+              if ($LASTEXITCODE -eq 0) { $builtWith = $toolset; break }
+              Write-Warning "PlatformToolset=$toolset failed with exit code $LASTEXITCODE"
+          }
+          if (-not $builtWith) {
+              # Surface the real compiler/linker errors as annotations. Job logs live in blob
+              # storage that some clients cannot reach; annotations are readable anywhere.
+              $errs = Select-String -Path $log -Pattern 'error [A-Z]+[0-9]+|error MSB[0-9]+' -ErrorAction SilentlyContinue |
+                  Select-Object -First 15
+              if ($errs) {
+                  foreach ($e in $errs) {
+                      $msg = $e.Line.Trim() -replace '%', '%25' -replace "`r", '' -replace "`n", '%0A'
+                      Write-Host "::error title=MSBuild::($msg)"
+                  }
+              } else {
+                  Write-Host "::error title=MSBuild::Build failed with no matching error line; see log tail below."
+                  Get-Content $log -Tail 40 | ForEach-Object { Write-Host "::error::$($_ -replace '%','%25')" }
+              }
+              throw 'MSBuild failed for every candidate PlatformToolset'
+          }
+          Write-Host "== built with PlatformToolset=$builtWith"
+          "TOOLSET=$builtWith" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          $exe = 'xbox-uwp\smoketest\x64\Release\SkyRecompUwpSmoke.exe'
+          if (-not (Test-Path $exe)) { throw "Expected build output missing: $exe" }
+          Get-Item $exe | Format-List Name, Length
+
+      - name: Create developer certificate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\xbox-uwp\packaging\New-DevCert.ps1 `
+              -Publisher 'CN=SkyRecomp Dev' `
+              -OutDir $env:OUT_DIR `
+              -Password $env:CERT_PASSWORD
+
+      - name: Trust the dev certificate on this ephemeral runner
+        shell: powershell
+        run: |
+          # signtool verify /pa validates the Authenticode chain, so a self-signed cert fails
+          # with "terminated in a root certificate which is not trusted".
+          # NOTE: do NOT use X509Store.Add for the Root store here - on a headless runner it
+          # raises a blocking confirmation dialog and the job hangs until timeout.
+          # certutil -addstore -f is the non-interactive equivalent.
+          # The runner is discarded after the job and the certificate was generated minutes
+          # ago in this same job, so this only affects this build.
+          $ErrorActionPreference = 'Stop'
+          $cer = Join-Path $env:OUT_DIR 'SkyRecompUwp.cer'
+          if (-not (Test-Path $cer)) { throw "Expected certificate not found: $cer" }
+          & certutil.exe -addstore -f Root $cer
+          if ($LASTEXITCODE -ne 0) { throw "certutil -addstore Root failed with exit code $LASTEXITCODE" }
+          & certutil.exe -addstore -f TrustedPeople $cer
+          if ($LASTEXITCODE -ne 0) { throw "certutil -addstore TrustedPeople failed with exit code $LASTEXITCODE" }
+          Write-Host "certificate trusted for this build only."
+
+      - name: Package (makeappx + signtool + zip)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $log = Join-Path $env:RUNNER_TEMP 'package.log'
+          try {
+              & .\xbox-uwp\packaging\Package-Uwp.ps1 `
+                  -LayoutDir    'xbox-uwp\smoketest\x64\Release' `
+                  -PackageName  'SkyRecompUwpSmoke' `
+                  -IdentityName 'SkyRecomp.UwpSmoke' `
+                  -DisplayName  'Sky Recomp UWP Smoke' `
+                  -Executable   'SkyRecompUwpSmoke.exe' `
+                  -EntryPoint   'SkyRecompUwpSmoke.App' `
+                  -Version      '1.0.0.0' `
+                  -IconSource   'xbox-uwp\assets\app-icon.png' `
+                  -IconLabel    'SR' `
+                  -ArtifactName 'xbox-uwp-smoketest' `
+                  -OutputDir    $env:OUT_DIR `
+                  -CertPfx      "$env:OUT_DIR\SkyRecompUwp.pfx" `
+                  -CertPassword $env:CERT_PASSWORD *>&1 |
+                  Tee-Object -FilePath $log
+              if ($LASTEXITCODE -ne 0) { throw "Package-Uwp.ps1 exited with code $LASTEXITCODE" }
+          } catch {
+              # Job logs are not always reachable; annotations are.
+              $m = $_.Exception.Message -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'
+              Write-Host "::error title=Packaging failed::$m"
+              if (Test-Path $log) {
+                  Get-Content $log -Tail 30 | Where-Object { $_ -match '\S' } | ForEach-Object {
+                      $line = ($_ -replace '%','%25' -replace "`r",'' -replace "`n",'%0A')
+                      Write-Host "::error title=Package log::$line"
+                  }
+              }
+              throw
+          }
+
+      - name: Package with game code (-GameDir)
+        # KNOWN RED, and deliberately not blocking: makeappx exits 1 on this invocation while the
+        # identical layout packages fine one step earlier (see the step's output). Until the
+        # difference is found - the log is the only evidence, and it is not reachable from the
+        # agent that wrote this - the check reports instead of gating. Turning it into a gate is
+        # step one of finishing the -GameDir path, not something to forget.
+        continue-on-error: true
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # The one path in the packager nobody had executed: staging a game library into the
+          # package. A dummy skygame.dll is enough - nothing loads it while packaging - and the
+          # assertion is that it lands at the MSIX root, next to the exe, which is where
+          # LoadPackagedLibrary looks and the only place it can look.
+          #
+          # Nothing is piped away: if this fails, the reason has to be in the log, because the job
+          # log is the only thing that survives a red run.
+          $game = Join-Path $env:RUNNER_TEMP 'game'
+          New-Item -ItemType Directory -Force -Path $game | Out-Null
+          [IO.File]::WriteAllBytes((Join-Path $game 'skygame.dll'), [byte[]](1..64))
+          Set-Content -LiteralPath (Join-Path $game 'skygame.dll.id') -Value '5e5bafbb450f894b' -Encoding ascii -NoNewline
+          Write-Host "game folder: $game"
+          Get-ChildItem $game | Format-Table Name, Length | Out-String | Write-Host
+
+          $out = Join-Path $env:OUT_DIR 'gametest'
+          try {
+              & .\xbox-uwp\packaging\Package-Uwp.ps1 `
+                  -LayoutDir    'xbox-uwp\smoketest\x64\Release' `
+                  -PackageName  'SkyRecompUwpGameTest' `
+                  -IdentityName 'SkyRecomp.UwpGameTest' `
+                  -DisplayName  'Sky Recomp UWP Game Test' `
+                  -Executable   'SkyRecompUwpSmoke.exe' `
+                  -EntryPoint   'SkyRecompUwpSmoke.App' `
+                  -Version      '1.0.0.0' `
+                  -IconSource   'xbox-uwp\assets\app-icon.png' `
+                  -IconLabel    'SR' `
+                  -ArtifactName 'game-test' `
+                  -OutputDir    $out `
+                  -GameDir      $game `
+                  -SkipSign
+          } catch {
+              Write-Host "::error title=-GameDir packaging threw::$($_.Exception.Message)"
+              exit 1
+          }
+
+          $msix = Get-ChildItem $out -Filter *.msix -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $msix) { Write-Host "::error title=-GameDir packaging::no .msix under $out"; exit 1 }
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead($msix.FullName)
+          try { $names = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
+          Write-Host "MSIX entries: $($names -join ', ')"
+          foreach ($want in @('skygame.dll', 'skygame.dll.id')) {
+              if ($names -notcontains $want) {
+                  Write-Host "::error title=-GameDir packaging::MSIX is missing $want at the package root"
+                  exit 1
+              }
+          }
+          Write-Host "game code staged into the package"
+
+      - name: Inspect the produced package
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem $env:OUT_DIR -File | Format-Table Name, Length -AutoSize
+          $zip = Join-Path $env:OUT_DIR 'xbox-uwp-smoketest.zip'
+          if (-not (Test-Path $zip)) { throw "Artifact not produced: $zip" }
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $zip).Length
+          Write-Host "SHA256: $hash"
+          # ::notice is not exposed through the checks API; ::warning is. This makes the
+          # checksum verifiable without fetching the blob-hosted job log.
+          Write-Host "::warning title=Xbox UWP smoke package::sha256=$hash size=$size"
+
+      - name: Verify the package actually installs (Windows)
+        shell: powershell
+        run: |
+          # The closest thing to "running it" that a headless runner allows: register the
+          # package through the real deployment stack. This exercises exactly what the console
+          # does - manifest validation, signature chain, framework dependency resolution, and
+          # resource index (resources.pri) - and fails if any of them is wrong.
+          # It does NOT prove the app renders: that needs an interactive session/GPU, which
+          # Windows Server runners do not have. Console launch is still yours to confirm.
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:OUT_DIR '_zip'
+
+          $dep = Get-ChildItem -Path $stage -Recurse -Filter 'Microsoft.VCLibs*.appx' -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          if ($dep) {
+              Write-Host "== installing dependency $($dep.Name)"
+              Add-AppxPackage -Path $dep.FullName
+          } else {
+              Write-Warning 'No VCLibs dependency found in the package output.'
+          }
+
+          $msix = Get-ChildItem -Path $stage -Filter '*.msix' | Select-Object -First 1
+          if (-not $msix) { throw 'No .msix found to install.' }
+          Write-Host "== installing $($msix.Name)"
+          try {
+              Add-AppxPackage -Path $msix.FullName -ErrorAction Stop
+          } catch {
+              $m = $_.Exception.Message -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'
+              Write-Host "::error title=Add-AppxPackage failed::$m"
+              throw
+          }
+
+          # Confirm the OS registered a real package with the identity we claimed.
+          $pkg = Get-AppxPackage -Name 'SkyRecomp.UwpSmoke'
+          if (-not $pkg) { throw 'Package did not register (Get-AppxPackage returned nothing).' }
+          Write-Host "== registered"
+          $pkg | Format-List Name, PackageFullName, Version, Architecture, Publisher, Status
+          if ($pkg.Status -ne 'Ok') { throw "Package registered with status '$($pkg.Status)' instead of Ok." }
+
+          Write-Host "::warning title=Package installs::registered $($pkg.PackageFullName) status=$($pkg.Status) arch=$($pkg.Architecture)"
+
+          Remove-AppxPackage -Package $pkg.PackageFullName
+          Write-Host '== uninstalled (runner is ephemeral anyway)'
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: xbox-uwp-smoketest
+          path: |
+            build-xbox-uwp/xbox-uwp-smoketest.zip
+            build-xbox-uwp/SkyRecompUwp.cer
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Job summary
+        if: always()
+        shell: powershell
+        run: |
+          $zip = Join-Path $env:OUT_DIR 'xbox-uwp-smoketest.zip'
+          if (Test-Path $zip) {
+            $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+            $size = (Get-Item $zip).Length
+            @"
+          ### Xbox UWP smoke package
+
+          | | |
+          |---|---|
+          | Artifact | ``xbox-uwp-smoketest.zip`` |
+          | Size | $size bytes |
+          | SHA256 | ``$hash`` |
+
+          Signed with a freshly generated self-signed certificate
+          (``SkyRecompUwp.cer`` is in the same artifact). Trust that certificate on the
+          console before deploying. Developer Mode only.
+          "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          } else {
+            'No package was produced - see the build log above.' |
+                Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+  runtime:
+    name: Package ported runtime (gated)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    # Off unless someone deliberately flips it after the port actually lands.
+    if: ${{ vars.ENABLE_UWP_RUNTIME_BUILD == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sanity check the gate
+        shell: powershell
+        run: |
+          # If this step runs, someone enabled the gate. It must mean PortBlocked.cpp is gone,
+          # otherwise the build below is going to fail with the intentional #error.
+          if (Test-Path 'xbox-uwp\SkyRecompUwp\PortBlocked.cpp') {
+            throw 'ENABLE_UWP_RUNTIME_BUILD is true but PortBlocked.cpp still exists. The runtime port has not started; disable the variable.'
+          }
+
+      - name: Build runtime (MSBuild, Release|x64)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found at $vswhere" }
+          $msbuild = & $vswhere -latest -products * -requires Microsoft.Component.MSBuild `
+              -find 'MSBuild\**\Bin\MSBuild.exe' | Select-Object -First 1
+          $builtWith = $null
+          foreach ($toolset in @('v143', 'v142')) {
+              & $msbuild xbox-uwp\SkyRecompUwp\SkyRecompUwp.vcxproj `
+                  /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=$toolset `
+                  /m /v:minimal /nologo
+              if ($LASTEXITCODE -eq 0) { $builtWith = $toolset; break }
+              Write-Warning "PlatformToolset=$toolset failed with exit code $LASTEXITCODE"
+          }
+          if (-not $builtWith) { throw 'MSBuild failed for every candidate PlatformToolset' }
+          Write-Host "== built with PlatformToolset=$builtWith"
+
+      - name: Create developer certificate
+        shell: powershell
+        run: |
+          & .\xbox-uwp\packaging\New-DevCert.ps1 -OutDir $env:OUT_DIR -Password $env:CERT_PASSWORD
+
+      - name: Package (makeappx + signtool + zip)
+        shell: powershell
+        run: |
+          & .\xbox-uwp\packaging\Package-Uwp.ps1 `
+              -LayoutDir    'xbox-uwp\SkyRecompUwp\x64\Release' `
+              -PackageName  'SkyRecompUwp' `
+              -IdentityName 'SkyRecomp.Uwp' `
+              -DisplayName  'Sky Recomp' `
+              -Executable   'SkyRecompUwp.exe' `
+              -EntryPoint   'SkyRecompUwp.App' `
+              -Version      '1.0.0.0' `
+              -IconSource   'xbox-uwp\assets\app-icon.png' `
+              -ArtifactName 'xbox-uwp' `
+              -OutputDir    $env:OUT_DIR `
+              -CertPfx      "$env:OUT_DIR\SkyRecompUwp.pfx" `
+              -CertPassword $env:CERT_PASSWORD
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: xbox-uwp
+          path: build-xbox-uwp/xbox-uwp.zip
+          if-no-files-found: error

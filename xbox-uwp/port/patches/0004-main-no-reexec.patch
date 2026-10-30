@@ -1,0 +1,32 @@
+diff --git a/runtime/main.c b/runtime/main.c
+index e796385..a045d0f 100644
+--- a/runtime/main.c
++++ b/runtime/main.c
+@@ -44,18 +44,27 @@ __attribute__((constructor(101))) static void reserve_guest_space(void) {
+     const char *tries = getenv("LARECOMP_REEXEC");
+     int n = tries ? atoi(tries) : 0;
+     if (n >= 20) {
+         fprintf(stderr, "FATAL: guest address range %llx-%llx is not free\n", GUEST_LO, GUEST_HI);
+         exit(1);
+     }
++#if defined(SKYRECOMP_UWP)
++    // An AppContainer cannot restart its own process, so the re-exec retry the desktop builds use is not
++    // available: say what went wrong instead of appearing to recover. /HIGHENTROPYVA:NO keeps the fixed
++    // window clear of the image; this is the check that it was enforced.
++    fprintf(stderr, "FATAL: guest address range %llx-%llx is not free (was the build linked /HIGHENTROPYVA:NO?)\n",
++            (unsigned long long)GUEST_LO, (unsigned long long)GUEST_HI);
++    exit(1);
++#else
+     char buf[16];
+     snprintf(buf, sizeof buf, "%d", n + 1);
+     setenv("LARECOMP_REEXEC", buf, 1);
+     plat_exec(NULL);
+     perror("re-exec");
+     exit(1);
++#endif
+ }
+ 
+ // ------------------------------------------------------------------ boot / in-place reboot
+ // Switching seeds (or vanilla) and going back to the start screen reboot the game inside this process: the window,
+ // GPU device, settings and shader caches stay. rt_request_reboot (menu, any thread) makes ui_run return on the
+ // main thread, which then: stops every guest thread (kernel_stop_threads: each unwinds at its next svc / HLE call /

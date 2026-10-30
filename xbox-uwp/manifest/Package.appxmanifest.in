@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Xbox UWP package manifest template (Developer Mode sideloading only).
+
+  Package-Uwp.ps1 substitutes the double-brace placeholders below and writes
+  AppxManifest.xml into the package layout before calling makeappx.exe.
+  (Do not write placeholder syntax inside these comments: the packager rejects any
+  placeholder-looking text left in the rendered manifest, on purpose.)
+
+  Notes on the Xbox-specific bits:
+    * TargetDeviceFamily "Windows.Xbox" is what lets the console accept the package.
+      "Windows.Desktop" is kept so the same package can be inspected/tested on a PC.
+    * ProcessorArchitecture is x64: Xbox One and Xbox Series X|S are x64 for UWP.
+      There is no ARM UWP target on Xbox.
+    * Capabilities are deliberately minimal. Anything not listed here cannot be used
+      by the app. Do NOT add rescap:runFullTrust: full-trust is not permitted on Xbox,
+      which is exactly why the desktop Win32 build cannot be wrapped into a package.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  IgnorableNamespaces="uap uap10">
+
+  <Identity
+    Name="{{IDENTITY_NAME}}"
+    Publisher="{{PUBLISHER}}"
+    Version="{{VERSION}}"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>{{DISPLAY_NAME}}</DisplayName>
+    <PublisherDisplayName>{{PUBLISHER_DISPLAY}}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Xbox" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App"
+      Executable="{{EXECUTABLE}}"
+      EntryPoint="{{ENTRYPOINT}}">
+      <uap:VisualElements
+        DisplayName="{{DISPLAY_NAME}}"
+        Description="{{DESCRIPTION}}"
+        BackgroundColor="#101010"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile
+          Wide310x150Logo="Assets\Wide310x150Logo.png"
+          Square310x310Logo="Assets\Square310x310Logo.png"
+          ShortName="{{SHORT_NAME}}">
+          <uap:ShowNameOnTiles>
+            <uap:ShowOn Tile="square150x150Logo" />
+            <uap:ShowOn Tile="wide310x150Logo" />
+          </uap:ShowNameOnTiles>
+        </uap:DefaultTile>
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#101010" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <Capability Name="internetClient" />
+  </Capabilities>
+</Package>

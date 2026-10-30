@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  SkyRecompUwp - intended home of the Xbox UWP port of the SkyRecomp runtime.
+
+  THIS PROJECT DOES NOT BUILD, BY DESIGN. PortBlocked.cpp raises an explicit #error.
+  Read README.md in this folder and ../../BUILD_NOTES.md section 4 before touching it.
+
+  CI builds this only when the repository variable ENABLE_UWP_RUNTIME_BUILD is 'true'.
+
+  Configuration notes (all of them matter for Xbox):
+    * AppContainerApplication + ApplicationType=Windows Store + ApplicationTypeRevision=10.0
+    * x64 only: Xbox has no ARM UWP target
+    * WindowsTargetPlatformVersion pinned to 10.0.26100.0, overridable on the command line
+    * v143 toolset (VS 2022), C++/CX for the entry point only
+    * D3D11/D3D12 + windowsapp.lib; no vulkan-1.lib, because there is no Vulkan on the console
+-->
+<Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{a9c1d2e4-5b77-4f0a-8c33-1d9e7b2a4c62}</ProjectGuid>
+    <Keyword>DirectXApp</Keyword>
+    <RootNamespace>SkyRecompUwp</RootNamespace>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <MinimumVisualStudioVersion>14.0</MinimumVisualStudioVersion>
+    <AppContainerApplication>true</AppContainerApplication>
+    <ApplicationType>Windows Store</ApplicationType>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.19041.0</WindowsTargetPlatformMinVersion>
+    <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Debug'">true</UseDebugLibraries>
+    <UseDebugLibraries Condition="'$(Configuration)'=='Release'">false</UseDebugLibraries>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Platform)\$(Configuration)\</IntDir>
+    <TargetName>SkyRecompUwp</TargetName>
+    <AppxPackage>false</AppxPackage>
+    <GenerateAppxPackageOnBuild>false</GenerateAppxPackageOnBuild>
+    <AppxPackageSigningEnabled>false</AppxPackageSigningEnabled>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <PreprocessorDefinitions>SKYRECOMP_UWP;WINAPI_FAMILY=WINAPI_FAMILY_APP;NDEBUG;_UNICODE;UNICODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- Plain C runtime sources: no /ZW. Enable CompileAsWinRT per-file for anything
+           that touches WinRT types instead of flipping it on for the whole project. -->
+      <CompileAsWinRT>false</CompileAsWinRT>
+      <AdditionalIncludeDirectories>$(ProjectDir)..\..\runtime;$(ProjectDir)..\..\runtime\nvn;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <!-- No vulkan-1.lib here, on purpose. That omission is the whole point. -->
+      <AdditionalDependencies>d3d11.lib;d3d12.lib;dxgi.lib;dxguid.lib;windowsapp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="PortBlocked.cpp" />
+  </ItemGroup>
+
+  <!--
+    When the port lands, remove PortBlocked.cpp above and add the real sources in groups
+    matching the Makefile, roughly:
+
+      runtime\*.c
+      runtime\hle\*.c
+      runtime\nvn\d3d12\*.cpp      (the new backend)
+      runtime\ui\*.cpp            (was *.mm, compiled as C++ on Linux already)
+      runtime\platform\uwp.cpp    (new platform layer)
+
+    Files still under runtime\nvn\vulkan\ must NOT be added.
+  -->
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

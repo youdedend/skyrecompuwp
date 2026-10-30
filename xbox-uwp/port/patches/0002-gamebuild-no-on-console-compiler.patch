@@ -1,0 +1,26 @@
+diff --git a/runtime/gamebuild.c b/runtime/gamebuild.c
+index f646182..2b40f0a 100644
+--- a/runtime/gamebuild.c
++++ b/runtime/gamebuild.c
+@@ -159,14 +159,21 @@ static bool find_tools(Tools *t) {
+     }
+ #endif
+     return true;
+ }
+ 
+ bool gamebuild_available(void) {
++#if defined(SKYRECOMP_UWP)
++    // Building the game code means running the generator and a compiler, which an AppContainer cannot
++    // do at all (no child processes, no toolchain on the console). The Xbox package is built on a PC
++    // instead, game code included; see port/BUILD-PORT.md.
++    return false;
++#else
+     Tools t;
+     return find_tools(&t);
++#endif
+ }
+ 
+ static void compiler(Args *a, const Tools *t) {
+     add(a, t->cc);
+     if (t->zig) add(a, "cc");
+ }

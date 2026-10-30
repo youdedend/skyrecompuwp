@@ -1,0 +1,454 @@
+name: Compile UWP platform layer
+
+# Compiles runtime/platform/uwp.c with clang-cl against the real Windows SDK in the UWP
+# configuration (WINAPI_FAMILY_APP, _CRT_APP, SKYRECOMP_UWP). No linking, no packaging, no game
+# files: /fsyntax-only means this answers one question cheaply - does the platform layer compile
+# in the configuration it will ship in.
+#
+# Before this exists, uwp.c had never been compiled anywhere. Every error it produces is a real
+# port defect, and the annotations below are the only way those errors are readable from CI.
+
+on:
+  push:
+    paths:
+      - 'xbox-uwp/port/**'
+      - '.github/workflows/compile-uwp-platform.yml'
+  pull_request:
+    paths:
+      - 'xbox-uwp/port/**'
+      - '.github/workflows/compile-uwp-platform.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: compile-uwp-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UPSTREAM_REPO: https://github.com/Apolinario-coder/SkyRecomp
+  UPSTREAM_SHA: f005a619b1732376ac355243cc5b30e2ccc89ca9
+
+jobs:
+  syntax:
+    name: clang-cl /fsyntax-only (UWP x64)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out the port
+        uses: actions/checkout@v4
+        with:
+          path: port
+
+      - name: Fetch upstream at the pinned commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init -q upstream
+          git -C upstream remote add origin "$UPSTREAM_REPO"
+          git -C upstream fetch -q --depth 1 origin "$UPSTREAM_SHA"
+          git -C upstream checkout -q FETCH_HEAD
+          echo "upstream at $(git -C upstream rev-parse HEAD)"
+
+      - name: Apply the port's patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd upstream
+          for p in ../port/xbox-uwp/port/patches/*.patch; do
+            echo "applying $(basename "$p")"
+            git apply --verbose "$p"
+          done
+
+      - name: Install the platform layer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp port/xbox-uwp/port/runtime/platform/uwp.c        upstream/runtime/platform/uwp.c
+          cp port/xbox-uwp/port/runtime/platform/uwp_compat.h upstream/runtime/platform/uwp_compat.h
+          cp port/xbox-uwp/port/runtime/platform/uwp_entry.cpp upstream/runtime/platform/uwp_entry.cpp
+          cp port/xbox-uwp/port/runtime/platform/uwp_present.h  upstream/runtime/platform/uwp_present.h
+          cp port/xbox-uwp/port/runtime/platform/uwp_present.cpp upstream/runtime/platform/uwp_present.cpp
+          cp port/xbox-uwp/port/runtime/platform/uwp_vk_present.h  upstream/runtime/platform/uwp_vk_present.h
+          cp port/xbox-uwp/port/runtime/platform/uwp_vk_present.c  upstream/runtime/platform/uwp_vk_present.c
+          # The POSIX headers MSVC lacks, as a directory: CMakeLists.txt puts it first on the
+          # include path, so <pthread.h> and friends resolve to these and not to the toolchain's.
+          mkdir -p upstream/runtime/platform/uwp_posix
+          cp port/xbox-uwp/port/runtime/platform/uwp_posix/*.h upstream/runtime/platform/uwp_posix/
+          ls -l upstream/runtime/platform/ upstream/runtime/platform/uwp_posix/
+
+      - name: Fetch Vulkan headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Only the headers: the Vulkan-side file is checked for type correctness, not linked.
+          git clone -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers vkheaders
+          ls vkheaders/include/vulkan/vulkan_core.h
+
+      - name: Fetch the renderer's third-party headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          # device.c is the one file the port changes that the clang-cl checks cannot see: it is not
+          # a platform file, so it has no place in the /fsyntax-only list above. Compiling it needs
+          # the headers it actually includes, at the versions the project pins.
+          # SDL3 3.4.18 is the version tools/build_deps_macos.sh fetches; 3.2 has no SDL_SavePNG,
+          # which device.c's screenshot path calls.
+          git clone -q --depth 1 --branch release-3.4.18 https://github.com/libsdl-org/SDL sdl3
+          git clone -q --depth 1 https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator vma
+          git clone -q --depth 1 https://github.com/google/shaderc shaderc
+          grep -m1 'define SDL_MICRO_VERSION' sdl3/include/SDL3/SDL_version.h
+          ls shaderc/libshaderc/include/shaderc/shaderc.h
+
+      - name: Set up the MSVC/UWP environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Probe the toolchain
+        shell: bash
+        run: |
+          # Two things have bitten this step already, so both are measured rather than assumed:
+          #   1. whether MSYS (Git Bash) mangles /D-style arguments into Windows paths
+          #   2. whether clang-cl is on PATH at all
+          echo "MSYSTEM=${MSYSTEM:-unset}  shell=$BASH_VERSION"
+          echo "clang-cl: $(command -v clang-cl || echo MISSING)"
+          clang-cl --version 2>&1 | head -3
+          printf '#ifdef SKYRECOMP_UWP\nUWP_DEFINE_SEEN\n#else\nUWP_DEFINE_MISSING\n#endif\n' > probe.c
+          echo "--- /D form ---"
+          clang-cl /nologo /EP /DSKYRECOMP_UWP=1 probe.c 2>&1 | grep -E "UWP_DEFINE|error" || true
+          echo "--- -D form ---"
+          clang-cl -nologo -E -DSKYRECOMP_UWP=1 probe.c 2>&1 | grep -E "UWP_DEFINE|error" || true
+          rm -f probe.c
+
+      - name: Syntax check uwp.c
+        id: check
+        shell: bash
+        env:
+          MSYS_NO_PATHCONV: '1'   # stop Git Bash rewriting /flags into C:/... paths
+        run: |
+          # GitHub runs bash with -e -o pipefail. A failing compiler must not abort the step
+          # before the diagnostics are parsed, or the only trace is "exit code 1".
+          set +e
+          # Dash-prefixed flags throughout: MSYS path conversion only rewrites arguments that
+          # start with a slash, and a silently dropped -DSKYRECOMP_UWP selects the wrong
+          # platform header - which is exactly what the first run of this job reported.
+          # /fsyntax-only: parse and type-check in the UWP configuration, produce no object.
+          clang-cl -nologo -fsyntax-only -W3 \
+            -DWINAPI_FAMILY=WINAPI_FAMILY_APP \
+            -D_CRT_APP \
+            -DSKYRECOMP_UWP=1 \
+            -D_WIN32_WINNT=0x0A00 \
+            -D_CRT_SECURE_NO_WARNINGS \
+            -DNOMINMAX \
+            -DWIN32_LEAN_AND_MEAN \
+            -D_AMD64_ -D_WIN64 \
+            -I upstream/runtime \
+            upstream/runtime/platform/uwp.c > diag.txt 2>&1
+          status=$?
+          echo "clang-cl (uwp.c) exit: $status"
+
+          # The presentation bridge is plain C++ (no /ZW), so clang-cl checks it too.
+          clang-cl -nologo -fsyntax-only -W3 -std=c++17 \
+            -DWINAPI_FAMILY=WINAPI_FAMILY_APP \
+            -D_CRT_APP \
+            -DSKYRECOMP_UWP=1 \
+            -D_WIN32_WINNT=0x0A00 \
+            -D_CRT_SECURE_NO_WARNINGS \
+            -DNOMINMAX \
+            -D_AMD64_ -D_WIN64 \
+            -I upstream/runtime \
+            upstream/runtime/platform/uwp_present.cpp >> diag.txt 2>&1
+          present=$?
+          echo "clang-cl (uwp_present.cpp) exit: $present"
+          [ "$present" -eq 0 ] || status=1
+
+          # The Vulkan half needs the Khronos headers; it is checked as C, like the runtime it
+          # belongs to.
+          clang-cl -nologo -fsyntax-only -W3 \
+            -DWINAPI_FAMILY=WINAPI_FAMILY_APP \
+            -D_CRT_APP \
+            -DSKYRECOMP_UWP=1 \
+            -D_WIN32_WINNT=0x0A00 \
+            -D_CRT_SECURE_NO_WARNINGS \
+            -DNOMINMAX \
+            -D_AMD64_ -D_WIN64 \
+            -I upstream/runtime \
+            -I vkheaders/include \
+            upstream/runtime/platform/uwp_vk_present.c >> diag.txt 2>&1
+          vkpresent=$?
+          echo "clang-cl (uwp_vk_present.c) exit: $vkpresent"
+          [ "$vkpresent" -eq 0 ] || status=1
+
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          head -60 diag.txt
+          exit 0
+
+      - name: Syntax check uwp_entry.cpp (MSVC /ZW)
+        id: entry
+        shell: bash
+        env:
+          MSYS_NO_PATHCONV: '1'
+        run: |
+          # C++/CX cannot be compiled by clang-cl: /ZW is MSVC only. The runtime is clang-cl and
+          # the host is MSVC, which is legal because both are MSVC x64 ABI - but it does mean this
+          # one file needs its own check, in its own compiler.
+          set +e
+          WINDOWS_WINMD=$(ls "$WindowsSdkDir"/UnionMetadata/*/Windows.winmd 2>/dev/null | head -1)
+          echo "Windows.winmd: ${WINDOWS_WINMD:-not found}"
+          cl /nologo /Zs /ZW /EHsc /W3 \
+             /D_WIN32_WINNT=0x0A00 \
+             /DWINAPI_FAMILY=WINAPI_FAMILY_APP \
+             /D_CRT_APP \
+             /D_CRT_SECURE_NO_WARNINGS \
+             ${WINDOWS_WINMD:+/FU"$WINDOWS_WINMD"} \
+             upstream/runtime/platform/uwp_entry.cpp > entry-diag.txt 2>&1
+          status=$?
+          echo "cl exit: $status"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          head -40 entry-diag.txt
+          exit 0
+
+      - name: Compile the renderer in the console configuration
+        id: renderer
+        shell: bash
+        run: |
+          # zig (PyPI) ships clang and a mingw sysroot, which is how the project already builds for
+          # Windows: upstream's Makefile calls `zig cc`. That makes it the one compiler available
+          # here that can compile device.c for a Windows target with SKYRECOMP_UWP on, including
+          # <windows.h>, <unistd.h> and the Vulkan/SDL headers - i.e. the configuration that ships,
+          # not a host-only approximation of it.
+          set +e
+          python -m pip install --quiet ziglang
+          dep="$PWD"
+          ( cd upstream && python -m ziglang cc \
+              -target x86_64-windows-gnu -std=gnu11 -c -o "$dep/renderer.o" \
+              -DSKYRECOMP_UWP=1 -DWINAPI_FAMILY=WINAPI_FAMILY_APP -D_CRT_APP \
+              -O0 -Wno-unused-command-line-argument \
+              -Iruntime -Iruntime/nvn -Iruntime/nvn/vulkan \
+              -I"$dep/vkheaders/include" -I"$dep/sdl3/include" -I"$dep/vma/include" \
+              runtime/nvn/vulkan/device.c ) > renderer-diag.txt 2>&1
+          status=$?
+          echo "zig cc (device.c, SKYRECOMP_UWP) exit: $status"
+          grep -v 'unused during compilation' renderer-diag.txt | tail -40
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Compile the runtime's POSIX consumers against the shims
+        id: wall
+        shell: bash
+        run: |
+          # <pthread.h>, <dirent.h>, <unistd.h>, <strings.h>, <dlfcn.h> are the whole of what MSVC
+          # lacks for this runtime (measured by compiling every translation unit the CMake project
+          # lists, then throwing away the ones that only failed for a missing third-party header).
+          # Each file here is a real consumer of one of them, and each is compiled for the console
+          # configuration with the shim directory first on the include path - so a shim that does
+          # not compile, or that omits a call site's function, fails here rather than at link time
+          # on a console that cannot tell you why.
+          set +e
+          dep="$PWD"
+          : > wall-diag.txt
+          status=0
+          # smaa_data.c includes a generated header. Generate it with the port's own script - the
+          # same one CMakeLists.txt runs - so the two cannot drift apart unnoticed.
+          mkdir -p inc
+          python port/xbox-uwp/port/tools/gen-smaa-inc.py \
+              upstream/third_party/smaa/SMAA.hlsl inc/smaa_hlsl.inc || status=1
+          for f in \
+              runtime/kernel.c \
+              runtime/dispatch.c \
+              runtime/paths.c \
+              runtime/mods.c \
+              runtime/romfs_build.c \
+              runtime/rando.c \
+              runtime/hle/pl.c \
+              runtime/gamelib.c \
+              runtime/nvn/custom_tex.c \
+              runtime/nvn/texpatch.c \
+              runtime/nvn/smaa_data.c \
+              runtime/nvn/vulkan/shaders.c ; do
+            # hle/movie.c is the same shape but needs the FFmpeg headers; it is left to the real
+            # build, where FFmpeg is a dependency anyway.
+            [ -f "upstream/$f" ] || { echo "missing $f" >> wall-diag.txt; status=1; continue; }
+            ( cd upstream && python -m ziglang cc \
+                -target x86_64-windows-gnu -std=gnu11 -c -o "$dep/wall.o" \
+                -DSKYRECOMP_UWP=1 -DWINAPI_FAMILY=WINAPI_FAMILY_APP -D_CRT_APP \
+                -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -O0 -Wno-unused-command-line-argument \
+                -Iruntime/platform/uwp_posix -Iruntime -Iruntime/nvn -Iruntime/nvn/vulkan \
+                -I"$dep/inc" -Ithird_party/smaa/Textures \
+                -I"$dep/vkheaders/include" -I"$dep/sdl3/include" -I"$dep/vma/include" \
+                -I"$dep/shaderc/libshaderc/include" \
+                "$f" ) >> wall-diag.txt 2>&1
+            if [ $? -ne 0 ]; then
+              echo "::warning file=$f::does not compile against the UWP POSIX shims"
+              status=1
+            fi
+          done
+          grep -v 'unused during compilation' wall-diag.txt | tail -40
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Compile the whole runtime (build report)
+        id: sweep
+        shell: bash
+        run: |
+          # The wall step compiles a chosen dozen; this compiles everything the CMake project lists,
+          # so the answer to "does the port build?" is a number in the build log rather than an
+          # opinion. Nothing here is linker-complete - the four UWP libraries (Dozen, SDL3, FFmpeg,
+          # shaderc) are still missing - but every translation unit that can be compiled is.
+          #
+          # runtime/ui/*.mm is excluded: those are Objective-C++ translation units that the CMake
+          # project compiles with -x c++ and that no mingw-targeted pass can parse.
+          set +e
+          dep="$PWD"
+          : > sweep.txt
+          ok=0; bad=0; ffmpeg_blocked=""
+          list=$( cd upstream && ls runtime/*.c runtime/hle/*.c runtime/nvn/*.c runtime/nvn/maxwell/*.c runtime/nvn/vulkan/*.c 2>/dev/null | grep -v -E 'platform/(linux|macos|windows)\.c' )
+          for f in $list; do
+            ( cd upstream && python -m ziglang cc \
+                -target x86_64-windows-gnu -std=gnu11 -c -o "$dep/sweep.o" \
+                -DSKYRECOMP_UWP=1 -DWINAPI_FAMILY=WINAPI_FAMILY_APP -D_CRT_APP \
+                -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -O0 -Wno-unused-command-line-argument \
+                -Iruntime/platform/uwp_posix -Iruntime -Iruntime/nvn -Iruntime/nvn/vulkan \
+                -I"$dep/inc" -Ithird_party/smaa/Textures \
+                -I"$dep/vkheaders/include" -I"$dep/sdl3/include" -I"$dep/vma/include" \
+                -I"$dep/shaderc/libshaderc/include" \
+                "$f" ) > sweep-one.txt 2>&1
+            if [ $? -eq 0 ]; then
+              echo "OK   $f" >> sweep.txt; ok=$((ok+1))
+            else
+              echo "FAIL $f" >> sweep.txt
+              grep -m3 'error:' sweep-one.txt | sed 's/^/       /' >> sweep.txt
+              bad=$((bad+1))
+              # FFmpeg is a declared build dependency (BUILD-PORT.md step 3), so its absence is the
+              # one failure this report is allowed to explain rather than be red about.
+              [ "$f" = "runtime/hle/movie.c" ] && ffmpeg_blocked="$f"
+            fi
+          done
+          { echo "----"; echo "compiled: $ok    failed: $bad"; } >> sweep.txt
+          tail -20 sweep.txt
+          expected=0
+          [ -n "$ffmpeg_blocked" ] && expected=1
+          if [ "$bad" -eq "$expected" ]; then st=0; else st=1; fi
+          echo "status=$st" >> "$GITHUB_OUTPUT"
+          echo "compiled=$ok" >> "$GITHUB_OUTPUT"
+          echo "failed=$bad" >> "$GITHUB_OUTPUT"
+
+      - name: Build and run the POSIX shim self-test
+        id: selftest
+        # A self-test that hangs is a failure, and one that hangs the runner is worse. Bounded here
+        # as well as at job level, so a regression in the shims costs three minutes, not twenty-five.
+        timeout-minutes: 4
+        shell: bash
+        run: |
+          # A shim that compiles proves the signatures, not the behaviour. This is a Win32 program,
+          # so mingw builds it and the runner executes it natively: mutex mutual exclusion,
+          # pthread_once under eight racing threads, a 256 MiB stack request, cond_wait waking on
+          # signal, cond_timedwait returning ETIMEDOUT rather than hanging, usleep sleeping, and
+          # opendir returning the entries the call sites were written against.
+          set +e
+          dep="$PWD"
+          : > selftest.txt
+          ( cd upstream && python -m ziglang cc -target x86_64-windows-gnu -std=gnu11 -O1 \
+              -DSKYRECOMP_UWP=1 -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX \
+              -Iruntime/platform/uwp_posix -Iruntime \
+              "$dep/port/xbox-uwp/port/tools/uwp-posix-selftest.c" -o "$dep/selftest.exe" ) >> selftest.txt 2>&1
+          build=$?
+          if [ "$build" -ne 0 ]; then
+            echo "self-test does not build" >> selftest.txt
+            cat selftest.txt
+            echo "status=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ./selftest.exe >> selftest.txt 2>&1
+          run=$?
+          cat selftest.txt
+          echo "status=$run" >> "$GITHUB_OUTPUT"
+
+      - name: AppContainer allowlist gate
+        id: allowlist
+        shell: bash
+        run: |
+          # The claim every summary makes - "zero forbidden API calls in the tree the console build
+          # actually compiles" - until now depended on somebody remembering to run the script. The
+          # build compiles uwp.c *instead of* windows.c, so the check does the same substitution
+          # before it looks.
+          set +e
+          cp upstream/runtime/platform/uwp.c upstream/runtime/platform/windows.c
+          python port/xbox-uwp/port/check-uwp-allowlist.py upstream/runtime --fail > allowlist.txt 2>&1
+          rc=$?
+          cat allowlist.txt
+          echo "status=$rc" >> "$GITHUB_OUTPUT"
+
+      - name: Report diagnostics as annotations
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          PY=$(command -v python || command -v python3 || echo python)
+          $PY port/xbox-uwp/port/annotate-diagnostics.py diag.txt \
+              --root upstream --status "${{ steps.check.outputs.status }}"
+          if [ -f entry-diag.txt ]; then
+            $PY port/xbox-uwp/port/annotate-diagnostics.py entry-diag.txt \
+                --root upstream --status "${{ steps.entry.outputs.status }}"
+          fi
+          if [ -f renderer-diag.txt ]; then
+            $PY port/xbox-uwp/port/annotate-diagnostics.py renderer-diag.txt \
+                --root upstream --status "${{ steps.renderer.outputs.status }}"
+          fi
+          if [ -f wall-diag.txt ]; then
+            $PY port/xbox-uwp/port/annotate-diagnostics.py wall-diag.txt \
+                --root upstream --status "${{ steps.wall.outputs.status }}"
+          fi
+          exit 0
+
+      - name: Fail if the compiler rejected the platform layer
+        shell: bash
+        run: |
+          fail=0
+          if [ "${{ steps.check.outputs.status }}" != "0" ]; then
+            echo "::error::uwp.c does not compile in the UWP configuration (see annotations)"
+            fail=1
+          fi
+          if [ "${{ steps.entry.outputs.status }}" != "0" ]; then
+            echo "::error::uwp_entry.cpp does not compile with /ZW (see annotations)"
+            fail=1
+          fi
+          if [ "${{ steps.renderer.outputs.status }}" != "0" ]; then
+            echo "::error::the patched runtime/nvn/vulkan/device.c does not compile for the console (see annotations)"
+            fail=1
+          fi
+          if [ "${{ steps.wall.outputs.status }}" != "0" ]; then
+            echo "::error::the runtime does not compile against the UWP POSIX shims (see annotations)"
+            fail=1
+          fi
+          if [ "${{ steps.selftest.outputs.status }}" != "0" ]; then
+            echo "::error::the POSIX shims do not behave as the runtime expects (see the self-test output)"
+            fail=1
+          fi
+          if [ "${{ steps.allowlist.outputs.status }}" != "0" ]; then
+            echo "::error::forbidden AppContainer API calls found (see the allowlist report)"
+            fail=1
+          fi
+          if [ "${{ steps.sweep.outputs.status }}" != "0" ]; then
+            echo "::error::a translation unit stopped compiling for the console: ${{ steps.sweep.outputs.failed }} failed, ${{ steps.sweep.outputs.compiled }} passed (see the build report artifact)"
+            fail=1
+          fi
+          [ "$fail" = "0" ] || exit 1
+          echo "uwp.c, uwp_entry.cpp, the patched device.c and the POSIX shims' consumers all compile"
+
+      - name: Upload the raw diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uwp-build-report
+          path: |
+            diag.txt
+            entry-diag.txt
+            renderer-diag.txt
+            wall-diag.txt
+            sweep.txt
+            selftest.txt
+            allowlist.txt
+          if-no-files-found: ignore
+          retention-days: 14

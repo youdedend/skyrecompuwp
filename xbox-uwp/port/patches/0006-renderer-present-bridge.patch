@@ -1,0 +1,245 @@
+diff --git a/runtime/nvn/vulkan/device.c b/runtime/nvn/vulkan/device.c
+index 01faf83..450c15a 100644
+--- a/runtime/nvn/vulkan/device.c
++++ b/runtime/nvn/vulkan/device.c
+@@ -17,12 +17,20 @@
+ #include "vk.h"
+ #include "../output_scale.h"
+ #include "../renderer.h"
+ 
+ VkG g_vk;
+ static SDL_Window *window;
++
++#if defined(SKYRECOMP_UWP)
++// Console presentation: there is no HWND, so there is no Vulkan surface and no swapchain. One image
++// is shared with D3D12, which copies it into a CoreWindow swapchain (platform/uwp_vk_present.c).
++#include "../../platform/uwp_present.h"
++#include "../../platform/uwp_vk_present.h"
++static UwpVkPresent *g_bridge;
++#endif
+ static atomic_bool ui_ready;
+ static VkDebugUtilsMessengerEXT messenger;
+ 
+ void vk_memory_report(void) {
+ #ifdef _WIN32
+     MEMORYSTATUSEX m = {.dwLength = sizeof m};
+@@ -115,14 +123,20 @@ static void pick_device(void) {
+     uint32_t nq = 0;
+     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, NULL);
+     VkQueueFamilyProperties *qp = calloc(nq, sizeof *qp);
+     vkGetPhysicalDeviceQueueFamilyProperties(g_vk.phys, &nq, qp);
+     g_vk.qfam = UINT32_MAX;
+     for (uint32_t i = 0; i < nq; i++) {
++#if defined(SKYRECOMP_UWP)
++        // No surface, so nothing to ask about presentation support: the bridge submits to this same
++        // queue and D3D12 does the presenting.
++        VkBool32 present = VK_TRUE;
++#else
+         VkBool32 present = VK_FALSE;
+         vkGetPhysicalDeviceSurfaceSupportKHR(g_vk.phys, i, g_vk.surface, &present);
++#endif
+         if ((qp[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && (qp[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && present) { g_vk.qfam = i; break; }
+     }
+     free(qp);
+     if (g_vk.qfam == UINT32_MAX) FATAL("no graphics+present queue\n");
+     LOG("[vk] using %s\n", g_vk.props.deviceName);
+ }
+@@ -157,13 +171,26 @@ static void create_device(void) {
+     uint32_t ne = 0;
+     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
+     VkExtensionProperties *ep = calloc(ne, sizeof *ep);
+     vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, ep);
+     const char *ext[8];
+     uint32_t n_ext = 0;
++#if defined(SKYRECOMP_UWP)
++    // No swapchain on the console. What the presentation bridge needs instead is the ability to
++    // export an image's memory as a D3D12 resource. VK_KHR_external_memory and
++    // VK_KHR_dedicated_allocation are core in Vulkan 1.1, which is the floor here, so only the
++    // Win32 half has to be asked for.
++    // By name, not by constant: VK_KHR_external_memory_win32's macro only exists when
++    // VK_USE_PLATFORM_WIN32_KHR is defined, which would drag <vulkan_win32.h> and its Windows types
++    // into every translation unit for one string. The bridge looks the function up the same way.
++    if (!has_ext(ep, ne, "VK_KHR_external_memory_win32"))
++        FATAL("the Vulkan driver has no VK_KHR_external_memory_win32: it cannot share an image with D3D12\n");
++    ext[n_ext++] = "VK_KHR_external_memory_win32";
++#else
+     ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
++#endif
+     g_vk.custom_border = has_ext(ep, ne, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
+     if (g_vk.custom_border) ext[n_ext++] = VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME;
+     g_vk.divisor = has_ext(ep, ne, VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME);
+     if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
+     g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
+     if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
+@@ -287,12 +314,31 @@ static VkPresentModeKHR present_mode(void) {
+     vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &n, m);
+     for (uint32_t i = 0; i < n; i++) if (m[i] == want) return want;
+     return VK_PRESENT_MODE_FIFO_KHR;
+ }
+ 
+ static void create_swapchain(void) {
++#if defined(SKYRECOMP_UWP)
++    // Everything the surface used to tell us is fixed on the console: one image, one format, the
++    // CoreWindow's size.
++    uint32_t w = 1280, h = 720;
++    uwp_present_window_size(&w, &h);
++    if (g_bridge) uwp_vk_present_destroy(g_bridge);
++    g_bridge = uwp_vk_present_create(g_vk.phys, g_vk.dev, g_vk.queue, g_vk.qfam, w, h,
++                                     VK_FORMAT_R8G8B8A8_UNORM);
++    if (!g_bridge) {
++        LOG("[vk] the presentation bridge could not be created\n");
++        return;
++    }
++    g_vk.sc_format = VK_FORMAT_R8G8B8A8_UNORM;
++    g_vk.sc_extent = (VkExtent2D){w, h};
++    g_vk.sc_count = 1;
++    g_vk.sc_images[0] = uwp_vk_present_image(g_bridge);
++    g_vk.sc_views[0] = uwp_vk_present_view(g_bridge);
++    LOG("[vk] presentation bridge ready (%ux%u)\n", w, h);
++#else
+     VkSurfaceCapabilitiesKHR caps;
+     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_vk.phys, g_vk.surface, &caps));
+     int w, h;
+     SDL_GetWindowSizeInPixels(window, &w, &h);
+     VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
+     if (!ext.width || !ext.height) return;  // minimised
+@@ -337,12 +383,13 @@ static void create_swapchain(void) {
+     for (uint32_t i = 0; i < g_vk.sc_count; i++) {
+         VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = g_vk.sc_images[i],
+                                     .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sf.format,
+                                     .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+         VK_CHECK(vkCreateImageView(g_vk.dev, &vi, NULL, &g_vk.sc_views[i]));
+     }
++#endif  // SKYRECOMP_UWP
+ }
+ 
+ static void recreate_swapchain(void) {
+     vkDeviceWaitIdle(g_vk.dev);
+     create_swapchain();
+ }
+@@ -377,30 +424,47 @@ typedef struct { uint32_t image; VkSemaphore acquired; bool ok; } Frame;
+ static Frame cur_frame;
+ 
+ // Acquire the next window image and begin rendering into it (cleared to `clear`). Returns false when there is
+ // nothing to draw into (minimised window).
+ bool vk_frame_begin(const float clear[4]) {
+     cur_frame.ok = false;
++#if defined(SKYRECOMP_UWP)
++    int w = (int)g_vk.sc_extent.width, h = (int)g_vk.sc_extent.height;
++    uint32_t ww = 0, wh = 0;
++    if (uwp_present_window_size(&ww, &wh) && (ww != g_vk.sc_extent.width || wh != g_vk.sc_extent.height)) {
++        w = (int)ww;
++        h = (int)wh;
++        recreate_swapchain();
++    }
++    if (!g_bridge) return false;
++#else
+     int w, h;
+     SDL_GetWindowSizeInPixels(window, &w, &h);
+     if (!w || !h) return false;  // minimised
+     if (!g_vk.swapchain || (uint32_t)w != g_vk.sc_extent.width || (uint32_t)h != g_vk.sc_extent.height) recreate_swapchain();
+     if (!g_vk.swapchain) return false;
++#endif
+     static int trace = -1;
+     if (trace < 0) trace = getenv("LARECOMP_VK_TRACE") != NULL;
+     if (trace) LOG("[vk] frame begin %dx%d (swapchain %ux%u)\n", w, h, g_vk.sc_extent.width, g_vk.sc_extent.height);
+     slot = (slot + 1) % FRAMES;
+     if (!acquire_sem[slot]) acquire_sem[slot] = binary_semaphore();
+     vk_wait_seq(slot_seq[slot]);
++#if defined(SKYRECOMP_UWP)
++    // One image, always index 0: the bridge takes it back from D3D12 and leaves it ready to draw on.
++    if (!uwp_vk_present_begin(g_bridge)) { LOG("[vk] the presentation image could not be taken\n"); return false; }
++    cur_frame.image = 0;
++#else
+     VkResult r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+     if (r == VK_ERROR_OUT_OF_DATE_KHR) {
+         recreate_swapchain();
+         if (!g_vk.swapchain) return false;
+         r = vkAcquireNextImageKHR(g_vk.dev, g_vk.swapchain, UINT64_MAX, acquire_sem[slot], VK_NULL_HANDLE, &cur_frame.image);
+     }
+     if (r != VK_SUCCESS && r != VK_SUBOPTIMAL_KHR) { LOG("[vk] acquire failed: %d\n", r); return false; }
++#endif
+     cur_frame.acquired = acquire_sem[slot];
+     slot_seq[slot] = vk_pending_seq();
+     VkCommandBuffer cb = vk_cmd();
+     image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+     VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = g_vk.sc_views[cur_frame.image],
+                                     .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+@@ -454,21 +518,30 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
+ void vk_frame_end(const char *shot_path) {
+     if (!cur_frame.ok) return;
+     VkCommandBuffer cb = vk_cmd();
+     vkCmdEndRendering(cb);
+     VkSpan shot = {0};
+     if (shot_path) save_window_image(cb, &shot);
+-    image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+     uint32_t img = cur_frame.image;
+     if (!done_sem[img]) done_sem[img] = binary_semaphore();
++#if defined(SKYRECOMP_UWP)
++    // No present queue to hand the image to: it stays in COLOR_ATTACHMENT_OPTIMAL and the bridge
++    // releases it to D3D12, copies it and presents. The image is single, so there is nothing to wait
++    // on beyond the render submission, which is what the bridge waits for.
++    uint64_t seq = vk_pending_seq();
++    vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
++    if (!uwp_vk_present_end(g_bridge, true)) LOG("[vk] present failed\n");
++#else
++    image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
+     uint64_t seq = vk_pending_seq();
+     vk_submit_extra(cur_frame.acquired, done_sem[img], VK_NULL_HANDLE);
+     VkPresentInfoKHR pi = {.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR, .waitSemaphoreCount = 1, .pWaitSemaphores = &done_sem[img],
+                            .swapchainCount = 1, .pSwapchains = &g_vk.swapchain, .pImageIndices = &img};
+     VkResult r = vkQueuePresentKHR(g_vk.queue, &pi);
+     if (r == VK_ERROR_OUT_OF_DATE_KHR || r == VK_SUBOPTIMAL_KHR) recreate_swapchain();
++#endif
+     cur_frame.ok = false;
+     if (shot_path) {
+         vk_wait_seq(seq);
+         uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
+         uint8_t *px = shot.ptr;
+         bool bgr = g_vk.sc_format == VK_FORMAT_B8G8R8A8_UNORM || g_vk.sc_format == VK_FORMAT_B8G8R8A8_SRGB;
+@@ -770,35 +843,45 @@ void ui_window_init(void) {
+         // keyboard focus from whatever the player is doing
+         const char *v = getenv("LARECOMP_NO_USER_INPUT");
+         bool scripted = v ? atoi(v) != 0 : (getenv("LARECOMP_INPUT") || getenv("LARECOMP_DOORJUMP_TEST") || getenv("LARECOMP_PLACE") ||
+                                             getenv("LARECOMP_HOST_INPUT") || getenv("LARECOMP_BIND_TEST"));
+         if (scripted) SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+     }
++#if defined(SKYRECOMP_UWP)
++    // No window: the activation host owns the CoreWindow and the presentation bridge presents into it.
++    (void)win_w; (void)win_h; (void)wflags;
++    LOG("[vk] console build: no SDL window\n");
++#else
+     window = SDL_CreateWindow("Sky Recomp", win_w, win_h, wflags);
+     if (!window) FATAL("SDL_CreateWindow: %s\n", SDL_GetError());
+     LOG("[vk] SDL window created at %llums\n", (unsigned long long)SDL_GetTicks());
+     rt_window_icon(window);
+     LOG("[vk] window icon ready at %llums\n", (unsigned long long)SDL_GetTicks());
++#endif
+     // Create Vulkan before requesting fullscreen; finish the transition before the game starts presenting.
+     create_instance();
+     extern void vk_reshade_init(void);
+     vk_reshade_init();
++#if !defined(SKYRECOMP_UWP)
+     if (!SDL_Vulkan_CreateSurface(window, g_vk.inst, NULL, &g_vk.surface)) FATAL("SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
++#endif
+     pick_device();
+     create_device();
+     LOG("[vk] device ready\n");
+     create_swapchain();
+     LOG("[vk] swapchain ready\n");
+     vk_exec_init();
+     LOG("[vk] execution ready\n");
+     vk_shaders_init();
+     LOG("[vk] shaders ready\n");
++#if !defined(SKYRECOMP_UWP)
+     if (g_settings.fullscreen && !getenv("LARECOMP_WINDOW") && !getenv("LARECOMP_HIDDEN")) {
+         if (!SDL_SetWindowFullscreen(window, true) || !SDL_SyncWindow(window))
+             LOG("[vk] fullscreen transition: %s\n", SDL_GetError());
+     }
++#endif
+ }
+ 
+ SDL_Window *ui_window(void) { return window; }
+ 
+ void backend_init(void) {
+     while (!atomic_load(&ui_ready)) SDL_Delay(1);
