@@ -123,20 +123,36 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          & .\xbox-uwp\packaging\Package-Uwp.ps1 `
-              -LayoutDir    'xbox-uwp\smoketest\x64\Release' `
-              -PackageName  'SkyRecompUwpSmoke' `
-              -IdentityName 'SkyRecomp.UwpSmoke' `
-              -DisplayName  'Sky Recomp UWP Smoke' `
-              -Executable   'SkyRecompUwpSmoke.exe' `
-              -EntryPoint   'SkyRecompUwpSmoke.App' `
-              -Version      '1.0.0.0' `
-              -IconSource   'xbox-uwp\assets\app-icon.png' `
-              -IconLabel    'SR' `
-              -ArtifactName 'xbox-uwp-smoketest' `
-              -OutputDir    $env:OUT_DIR `
-              -CertPfx      "$env:OUT_DIR\SkyRecompUwp.pfx" `
-              -CertPassword $env:CERT_PASSWORD
+          $log = Join-Path $env:RUNNER_TEMP 'package.log'
+          try {
+              & .\xbox-uwp\packaging\Package-Uwp.ps1 `
+                  -LayoutDir    'xbox-uwp\smoketest\x64\Release' `
+                  -PackageName  'SkyRecompUwpSmoke' `
+                  -IdentityName 'SkyRecomp.UwpSmoke' `
+                  -DisplayName  'Sky Recomp UWP Smoke' `
+                  -Executable   'SkyRecompUwpSmoke.exe' `
+                  -EntryPoint   'SkyRecompUwpSmoke.App' `
+                  -Version      '1.0.0.0' `
+                  -IconSource   'xbox-uwp\assets\app-icon.png' `
+                  -IconLabel    'SR' `
+                  -ArtifactName 'xbox-uwp-smoketest' `
+                  -OutputDir    $env:OUT_DIR `
+                  -CertPfx      "$env:OUT_DIR\SkyRecompUwp.pfx" `
+                  -CertPassword $env:CERT_PASSWORD *>&1 |
+                  Tee-Object -FilePath $log
+              if ($LASTEXITCODE -ne 0) { throw "Package-Uwp.ps1 exited with code $LASTEXITCODE" }
+          } catch {
+              # Job logs are not always reachable; annotations are.
+              $m = $_.Exception.Message -replace '%','%25' -replace "`r",'' -replace "`n",'%0A'
+              Write-Host "::error title=Packaging failed::$m"
+              if (Test-Path $log) {
+                  Get-Content $log -Tail 30 | Where-Object { $_ -match '\S' } | ForEach-Object {
+                      $line = ($_ -replace '%','%25' -replace "`r",'' -replace "`n",'%0A')
+                      Write-Host "::error title=Package log::$line"
+                  }
+              }
+              throw
+          }
 
       - name: Inspect the produced package
         shell: powershell
