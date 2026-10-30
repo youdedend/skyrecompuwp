@@ -195,21 +195,24 @@ jobs:
       - name: Summary
         shell: powershell
         run: |
+          # No here-strings here on purpose: YAML leaves the block indented, and PowerShell
+          # requires a here-string terminator at column 0, so @" ... "@ silently fails.
           $zip = Join-Path $env:OUT_DIR 'xbox-uwp-smoketest.zip'
-          if (Test-Path $zip) {
-            $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-            $size = (Get-Item $zip).Length
-            Write-Host "::warning title=Released::${{ steps.rel.outputs.tag }} sha256=$hash size=$size"
-            @"
-            ### Released: ${{ steps.rel.outputs.tag }}
-
-            | | |
-            |---|---|
-            | Asset | ``xbox-uwp-smoketest.zip`` |
-            | Size | $size bytes |
-            | SHA256 | ``$hash`` |
-
-            Verified installed on this runner (`Add-AppxPackage`, `Status = Ok`).
-            Developer Mode only. This is the smoke test, not the game.
-            "@ | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
-          }
+          if (-not (Test-Path $zip)) { Write-Host 'No package found.'; exit 0 }
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $zip).Length
+          $tag  = '${{ steps.rel.outputs.tag }}'
+          Write-Host "::warning title=Released::$tag sha256=$hash size=$size"
+          $md = @(
+            "### Released: $tag",
+            '',
+            '| | |',
+            '|---|---|',
+            '| Asset | `xbox-uwp-smoketest.zip` |',
+            "| Size | $size bytes |",
+            "| SHA256 | ``$hash`` |",
+            '',
+            'Verified installed on this runner (`Add-AppxPackage`, `Status = Ok`).',
+            'Developer Mode only. This is the smoke test, not the game.'
+          ) -join "`n"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $md -Encoding utf8
