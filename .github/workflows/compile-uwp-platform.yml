@@ -69,6 +69,8 @@ jobs:
           cp port/xbox-uwp/port/runtime/platform/uwp.c        upstream/runtime/platform/uwp.c
           cp port/xbox-uwp/port/runtime/platform/uwp_compat.h upstream/runtime/platform/uwp_compat.h
           cp port/xbox-uwp/port/runtime/platform/uwp_entry.cpp upstream/runtime/platform/uwp_entry.cpp
+          cp port/xbox-uwp/port/runtime/platform/uwp_present.h  upstream/runtime/platform/uwp_present.h
+          cp port/xbox-uwp/port/runtime/platform/uwp_present.cpp upstream/runtime/platform/uwp_present.cpp
           ls -l upstream/runtime/platform/
 
       - name: Set up the MSVC/UWP environment
@@ -117,7 +119,23 @@ jobs:
             -I upstream/runtime \
             upstream/runtime/platform/uwp.c > diag.txt 2>&1
           status=$?
-          echo "clang-cl exit: $status"
+          echo "clang-cl (uwp.c) exit: $status"
+
+          # The presentation bridge is plain C++ (no /ZW), so clang-cl checks it too.
+          clang-cl -nologo -fsyntax-only -W3 -std=c++17 \
+            -DWINAPI_FAMILY=WINAPI_FAMILY_APP \
+            -D_CRT_APP \
+            -DSKYRECOMP_UWP=1 \
+            -D_WIN32_WINNT=0x0A00 \
+            -D_CRT_SECURE_NO_WARNINGS \
+            -DNOMINMAX \
+            -D_AMD64_ -D_WIN64 \
+            -I upstream/runtime \
+            upstream/runtime/platform/uwp_present.cpp >> diag.txt 2>&1
+          present=$?
+          echo "clang-cl (uwp_present.cpp) exit: $present"
+          [ "$present" -eq 0 ] || status=1
+
           echo "status=$status" >> "$GITHUB_OUTPUT"
           head -60 diag.txt
           exit 0
