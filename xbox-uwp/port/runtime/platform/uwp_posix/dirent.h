@@ -54,7 +54,7 @@ static inline void uwp_dirent_pattern(const char *path, char *out, size_t size) 
 static inline DIR *opendir(const char *path) {
     char pattern[1024];
     uwp_dirent_pattern(path ? path : "", pattern, sizeof pattern);
-    DIR *d = malloc(sizeof *d);
+    DIR *d = (DIR *)malloc(sizeof *d);  // (C++ needs the cast; see pthread.h)
     if (!d) return NULL;
     d->done = 0;
     d->find = FindFirstFileA(pattern, &d->data);

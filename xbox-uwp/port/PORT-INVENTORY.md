@@ -26,6 +26,7 @@ that no amount of patching removes.
 | 13 | `uwp_vk_present.c` — shared Vulkan image, ownership | new file | **compiles** in CI; never run |
 | 14 | `uwp_posix/{pthread,dirent,unistd,strings,dlfcn}.h` — POSIX headers MSVC lacks | 5 headers, 372 lines | **compiles** in CI |
 | 15 | **patch 0007** — `romfs_build.c` hard links | 23-line patch | **compiles** in CI |
+| 16 | `runtime/ui/*.mm` — 17 C++ translation units | upstream files, built as C++ | **9 of 17 compile**; the rest need the MSVC STL (see below) |
 
 ---
 
@@ -440,6 +441,17 @@ of it has been executed. Grep for the marker.
    What still has to happen is the first half of that sentence: `make gen && make` on a PC with
    the game files set up, then the CMake project.
 7. **First frame on the console**, then the memory pager if and when the budget bites.
+
+**The UI translation units are the one part of the build nobody can compile off-Windows.** The
+CMake project compiles the 17 `runtime/ui/*.mm` files as plain C++ (`LANGUAGE CXX`), which is what
+keeps `__OBJC__` undefined and the Metal imports out. Reproducing that with the toolchain the rest
+of the gate uses does not work: zig's mingw target has no C++ standard library unless it is driven
+as `zig c++`, and that driver defines `__OBJC__` and pulls in `<Metal/Metal.h>`. Nine of the
+seventeen do compile in plain C++ mode, and compiling them found two genuine bugs in the shims —
+`malloc` results assigned without a cast, which C accepts and C++ does not. The other eight need
+MSVC's STL, so they are first compiled by the real Windows build, not here. Stated so the "53 of
+54" figure above is not read as more than it is: it counts C, and the C++ UI layer is a separate
+question that only step 7 of `BUILD-PORT.md` answers.
 
 Steps 2-8 now have an ordered, per-step recipe in `BUILD-PORT.md`, with each command's
 provenance and an explicit "not yet run" mark where nobody has executed it. That file did not

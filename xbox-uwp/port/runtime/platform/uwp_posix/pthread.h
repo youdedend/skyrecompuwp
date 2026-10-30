@@ -194,7 +194,9 @@ static inline DWORD WINAPI uwp_thread_trampoline(LPVOID param) {
 
 static inline int pthread_create(pthread_t *t, const pthread_attr_t *attr,
                                  void *(*start)(void *), void *arg) {
-    uwp_thread_body *body = malloc(sizeof *body);
+    // The cast is load-bearing: this header is included by C and by C++ (the .mm UI files),
+    // and C++ will not convert void* implicitly.
+    uwp_thread_body *body = (uwp_thread_body *)malloc(sizeof *body);
     if (!body) return EAGAIN;
     body->start = start;
     body->arg = arg;
