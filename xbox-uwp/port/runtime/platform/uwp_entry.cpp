@@ -37,6 +37,7 @@
 // entry point, and two symbols called main cannot coexist. See CMakeLists.txt.
 extern "C" void uwp_set_local_state(const wchar_t *path);
 extern "C" void uwp_set_install_dir(const wchar_t *path);
+extern "C" bool uwp_present_set_core_window(void *core_window_abi);
 extern "C" int skyrecomp_main(int argc, char **argv);
 
 namespace SkyRecomp {
@@ -86,6 +87,12 @@ public:
 
     virtual void SetWindow(Windows::UI::Core::CoreWindow ^ window) {
         m_window = window;
+        // Hand the window to the presentation bridge here rather than in Run(): this is the moment
+        // it exists, and DXGI must be able to reach it before the renderer creates its swapchain.
+        // reinterpret_cast to IUnknown* is how a C++/CX handle becomes its ABI pointer.
+        if (!uwp_present_set_core_window(reinterpret_cast<::IUnknown *>(window))) {
+            entry_log(L"SetWindow: the presentation bridge refused the CoreWindow");
+        }
     }
 
     virtual void Load(Platform::String ^ entryPoint) {

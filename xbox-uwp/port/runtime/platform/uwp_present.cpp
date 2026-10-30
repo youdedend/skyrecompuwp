@@ -50,7 +50,12 @@ bool ok(HRESULT hr, const char *what) {
 
 extern "C" bool uwp_present_set_core_window(void *core_window_abi) {
     if (!core_window_abi) return false;
-    g_core_window = static_cast<IUnknown *>(core_window_abi);
+    IUnknown *window = static_cast<IUnknown *>(core_window_abi);
+    // The presenter outlives the call and hands the pointer to DXGI, so it takes its own
+    // reference rather than borrowing one from the view.
+    window->AddRef();
+    if (g_core_window) g_core_window->Release();
+    g_core_window = window;
     return true;
 }
 
