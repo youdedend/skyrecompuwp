@@ -16,9 +16,22 @@
 #endif
 
 #include <windows.h>
-#include <d3d11.h>
-#include <dxgi.h>
-#include <wrl/client.h>
+
+// Include set taken from Microsoft's Xbox ATG UWP samples (SimpleHDR_UWP/pch.h), because
+// these exact choices matter:
+//   * <dxgi1_6.h>, not <dxgi.h>: the latter only declares up to IDXGISwapChain/IDXGIFactory1,
+//     so IDXGISwapChain1 and IDXGIFactory2 are missing and every ComPtr<IDXGISwapChain1>
+//     collapses with C2923 -> C2512 -> C2039.
+//   * <wrl.h> guarded by "warning 4467 disabled": C++/CX (/ZW) otherwise emits that warning
+//     through the WRL headers.
+//   * <d3d11_3.h> pulls in <d3d11.h> and is what the samples compile against.
+#pragma warning(push)
+#pragma warning(disable : 4467)
+#include <wrl.h>
+#pragma warning(pop)
+
+#include <d3d11_3.h>
+#include <dxgi1_6.h>
 
 #include <cmath>
 #include <cstdint>

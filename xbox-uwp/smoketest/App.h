@@ -57,7 +57,9 @@ namespace SkyRecompUwpSmoke {
         Microsoft::WRL::ComPtr<IDXGISwapChain1>         m_swapChain;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView>  m_renderTargetView;
 
-        Windows::Foundation::Size m_windowBounds;
+        // Windows::UI::Core::CoreWindow::Bounds is a Windows::Foundation::Rect.
+        // Declaring this as a Size fails with C2679 on assignment.
+        Windows::Foundation::Rect m_windowBounds;
         bool m_windowClosed;
         bool m_visible;
         LARGE_INTEGER m_qpcFrequency;
