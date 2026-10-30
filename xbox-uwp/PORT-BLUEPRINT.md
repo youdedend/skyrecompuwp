@@ -177,29 +177,48 @@ contains no generated game instructions, and preparation happens from the user's
 
 ---
 
-## 6. SDL3 on UWP: proven, with two small patches
+## 6. SDL3 on UWP: **CORRECTED — my earlier claim was wrong**
 
-My Blocker B5 said SDL3's UWP status was unverified. It is verified now:
+*What I wrote first, kept so the mistake stays visible:* "SDL3 has a WinRT video backend
+(`src/video/winrt/SDL_winrtvideo.cpp`) and a Windows.Gaming.Input joystick path; WWHD pins SDL3
+3.4.18, so the two patches transplant directly."
 
-- SDL3 has a **WinRT video backend** (`src/video/winrt/SDL_winrtvideo.cpp`) and a
-  **Windows.Gaming.Input** joystick path (`src/joystick/windows/SDL_windows_gaming_input.c`).
-- WWHD builds SDL3 for UWP separately with MSVC and imports it:
-  ```cmake
-  add_library(SDL3_UWP SHARED IMPORTED)
-  set_target_properties(SDL3_UWP PROPERTIES
-      IMPORTED_IMPLIB "${WWHD_SDL_BUILD}/SDL3.lib"
-      IMPORTED_LOCATION "${WWHD_SDL_BUILD}/SDL3.dll"
-      INTERFACE_INCLUDE_DIRECTORIES "${WWHD_SDL_SOURCE}/include")
-  ```
-- Two patches are needed, both small and both relevant to SkyRecomp's controller code
-  (`runtime/hle/input.c`, `bindings.c` rely on `SDL_GamepadType`):
-  - `sdl-pixel-format.patch` — return type of `D3D11_DXGIFormatToSDLPixelFormat` is
-    `SDL_PixelFormat`, not `Uint32`.
-  - `sdl-wgi-input.patch` — on Xbox, WGI must report the **raw** button layout
-    (`nbuttons = 14`) so `SDL_CreateMappingForWGIGamepad` maps it; the stock code assumes
-    `SDL_GAMEPAD_BUTTON_COUNT` and gets the wrong layout.
-- The repo pins SDL3 **3.4.18**, the same tag SkyRecomp's CI uses — so the patch set should
-  transplant directly.
+*That is false, and I verified it against the upstream tree instead of against a patch filename:*
+
+```
+$ gh api "repos/libsdl-org/SDL/git/trees/<tag>?recursive=1" | grep -c winrt
+release-3.2.0: 0   release-3.2.4: 0   release-3.4.0: 0
+release-3.4.18: 0   preview-3.1.3: 0   preview-3.1.6: 0
+```
+
+**No SDL3 release has any WinRT/UWP code.** SDL2 does — `release-2.30.11` carries 24 files,
+~180 KiB, in `src/core/winrt/`, `src/video/winrt/`, `src/main/winrt/` and
+`src/audio/wasapi/SDL_wasapi_winrt.cpp`.
+
+So what is WWHD's `WWHD_SDL_SOURCE`, described in its own CMake as a **"Pinned SDL3 UWP
+source"**? Not upstream 3.4.18. Their patches target `src/video/winrt/SDL_winrtvideo.cpp` and
+`src/joystick/windows/SDL_windows_gaming_input.c` — SDL2's file layout — and the "small" pixel
+patch rewrites an SDL2-era `Uint32` return into SDL3's `SDL_PixelFormat`. That is the signature
+of **SDL2's WinRT backend back-ported into an SDL3 tree**, carried as their own branch. Their
+manifest confirms it: `EntryPoint="WWHD.GameTest.App"` with `wWinMain` + `SDL_RunApp` is SDL2's
+WinRT app model, where SDL supplies the activatable class and the app only supplies
+`run_game()`.
+
+### What this means for SkyRecomp
+
+The runtime uses **219 distinct `SDL_*` symbols** (measured over `runtime/`): window + Vulkan
+surface, the event loop, gamepads, gyro/accelerometer, audio streams, mouse, keyboard, timing.
+That is not a surface to hand-roll, and pinning SDL2 instead means porting 219 SDL3 call sites
+backwards — strictly worse.
+
+The dependency therefore becomes: **a WinRT/WinUWP backend ported into SDL3, carried as a
+patch series.** Bounded — the source material is the ~180 KiB SDL2 backend, of which the video
+driver (~34 KiB), the Direct3D app model (~32 KiB), keyboard (~22 KiB) and pointer input
+(~15 KiB) are the bulk — but it is real work with real API churn between SDL2 and SDL3, and it
+is maintenance debt for as long as upstream refuses WinRT.
+
+**Revised estimate: 1.5–3 weeks**, not the 3–5 days previously written, and it now sits on the
+critical path ahead of the first frame rather than beside it.
 
 ---
 
@@ -248,7 +267,7 @@ Supersedes Stages 1–4 of `XBOX-UWP-PORT-PLAN.md`.
 |---|---|---|---|
 | 1 | **CMake + clang-cl UWP project** replacing the `.vcxproj` scaffold: `CMAKE_SYSTEM_NAME=WindowsStore`, `/APPCONTAINER /HIGHENTROPYVA:NO /STACK:16MB`, Store CRT lib dirs, `WindowsApp.lib`, winpthreads | 3–5 days | — |
 | 2 | **Dozen**: build `vulkan_dzn.dll` for UWP from a Mesa fork, ship with `dxil.dll`; point the existing Vulkan renderer at it | 1–2 weeks | #1 |
-| 3 | **SDL3 3.4.18 for UWP** + the two WWHD patches; verify gamepad mapping against `runtime/hle/input.c` | 3–5 days | #1 |
+| 3 | **Port SDL2's WinRT backend into SDL3** (no SDL3 release has one — see section 6) and build it for UWP; verify gamepad mapping against `runtime/hle/input.c` | 1.5–3 weeks | #1 |
 | 4 | **Platform layer**: replace `CreateProcessW`/job objects with in-process calls; `LocalState` for logs/saves/mods; `DevelopmentFiles`+USB via picker for game files; `extendedExecutionUnconstrained` lifecycle | 1–2 weeks | #1 |
 | 5 | **Game library off-console + bridge load** (WWHD `wwhd-clang-bridge` pattern) instead of on-device `zig cc` | 1–2 weeks | #4 |
 | 6 | **Memory**: paging/eviction against the 5,120 MiB budget, using `guest_swap`/KytyPS5 pager as reference | 2–4 weeks | #2 |

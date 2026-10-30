@@ -76,10 +76,11 @@ file(GLOB SKY_UI_SRC        CONFIGURE_DEPENDS "${SKY_ROOT}/runtime/ui/*.mm")
 # windows.c/macos.c/linux.c must not be compiled here; uwp.c replaces them.
 list(FILTER SKY_RUNTIME_SRC EXCLUDE REGEX "/platform/(windows|macos|linux)\\.c$")
 
-# The C++/CX activation host. Required: a UWP app is activated through the class the manifest's
-# EntryPoint names, and that class is what hands LocalState and the install directory to uwp.c
-# before plat_init() runs. It is not written yet - see PORT-INVENTORY.md section 8, step 2 - so
-# this fails loudly rather than producing an executable nothing can activate.
+# The entry host. Required: a UWP app is activated through the class the manifest's EntryPoint
+# names, and whatever supplies that class also has to hand LocalState and the install directory to
+# uwp.c before plat_init() runs. Per the shipping ports' shape (PORT-INVENTORY.md section 7) this
+# is wWinMain + SDL_RunApp, with the WinRT app model coming from the SDL fork. Not written yet -
+# see section 9 step 2 - so this fails loudly rather than linking an executable nothing activates.
 set(SKY_UWP_ENTRY "${CMAKE_CURRENT_LIST_DIR}/runtime/platform/uwp_entry.cpp")
 if(NOT EXISTS "${SKY_UWP_ENTRY}")
     message(FATAL_ERROR

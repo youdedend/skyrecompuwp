@@ -18,7 +18,7 @@ removes.
 | 6 | Game code must live **inside the package** | design change | analysed, not built |
 | 7 | User files reachable only through brokering | design change | analysed, not built |
 | 8 | Mesa Dozen + `dxil.dll` | dependency to build | analysed, not built |
-| 9 | SDL3 3.4.18 + 2 patches | dependency to build | analysed, not built |
+| 9 | SDL3 + SDL2's WinRT backend ported in | dependency to build | analysed, not built |
 | 10 | C++/CX activation host, CMake project | new files | CMake written; host **not written** |
 
 ---
@@ -217,7 +217,42 @@ A refusal is not a port blocker.
 
 ---
 
-## 7. What is verified, and what is not
+## 7. Correction: SDL3 has no WinRT backend
+
+`PORT-BLUEPRINT.md` section 6 originally said SDL3 ships a WinRT video driver and that two small
+patches would bring it to UWP. Enumerating the upstream trees says otherwise:
+
+| ref | paths matching `winrt` |
+|---|---|
+| `release-3.2.0`, `release-3.2.4`, `release-3.4.0` | 0 |
+| `release-3.4.18`, `preview-3.1.3`, `preview-3.1.6` | 0 |
+| **`release-2.30.11` (SDL2)** | **24 files, ~180 KiB** |
+
+SDL3 dropped the WinRT app model; SDL2 still has it (`src/core/winrt/`, `src/video/winrt/`,
+`src/main/winrt/`). WWHD's CMake calls its dependency a *"Pinned SDL3 UWP source"*, and its
+patches target SDL2's file layout while converting SDL2 types to SDL3 ones — i.e. it is a branch
+that back-ported the SDL2 WinRT backend into SDL3, not a release plus two patches.
+
+Because the runtime touches **219 distinct `SDL_*` symbols**, the options are:
+
+| option | verdict |
+|---|---|
+| Port SDL2's WinRT backend into SDL3, carried as a patch series | **chosen**; ~180 KiB of source material, 1.5–3 weeks |
+| Pin SDL2 and port 219 SDL3 call sites backwards | worse: rewrites working code |
+| Hand-write CoreWindow + WGI + audio | worse: reimplements a driver that exists |
+
+The consequence for this inventory is confined to step 4 of the remaining-work list: the SDL3
+dependency is a **fork with a backend port**, not a stock build with two `.patch` files.
+
+Also learned from the port that has done this, and worth carrying over: their entry point is
+`wWinMain` + `SDL_RunApp` (SDL supplies the activatable class the manifest names), and they
+refuse to start when `MemoryManager.AppMemoryUsageLimit() < 2 GiB`, with the message *"Set this
+application to Game in Dev Home and restart"* — the app's **Type must be Game** in Dev Home, or
+the memory limit is a fraction of the 5,120 MiB budget.
+
+---
+
+## 8. What is verified, and what is not
 
 | Claim | Evidence |
 |---|---|
@@ -238,21 +273,20 @@ replacement instead.
 
 ---
 
-## 8. Remaining work, in order
+## 9. Remaining work, in order
 
 1. **Build `uwp.c` with clang-cl on Windows**, fix the compile errors. Needs the UWP workload
    and SDK 10.0.26100. Cheapest possible step; everything downstream is blocked on it.
-2. **Write `port/runtime/platform/uwp_entry.cpp`** — the C++/CX `IFrameworkView` that the
-   manifest's `EntryPoint` names. It must obtain `ApplicationData.Current.LocalFolder.Path` and
-   `Package.Current.InstalledLocation.Path` and hand them to `uwp.c` before `plat_init()`, which
-   is the only reliable way to find `LocalState` (the `%LOCALAPPDATA%` guess in `uwp.c` is a
-   fallback and is marked as such). The SDL3 side of the entry model — whether SDL owns the
-   `IFrameworkView` or the app does — is the one unresolved question, and SDL3 3.4.18's own
-   WinRT source answers it.
+2. **Write `port/runtime/platform/uwp_entry.cpp`** — the entry host the manifest names. Shape is
+   now known (section 7): `wWinMain` + `SDL_RunApp`, with the WinRT app model coming from the
+   SDL fork. It must obtain `ApplicationData.Current.LocalFolder.Path` and
+   `Package.Current.InstalledLocation.Path` for `uwp.c` (the `%LOCALAPPDATA%` guess in `uwp.c` is
+   a marked fallback only), assert `AppMemoryUsageLimit() >= 2 GiB` so a wrong Dev Home app type
+   is a clear error rather than an out-of-memory, and start the log before anything else.
 3. **Build Dozen** (`vulkan_dzn.dll`) and `dxil.dll` for UWP. Fork of Mesa, `-Dvulkan-drivers=
    microsoft`, D3D12, DXIL 1.7. Largest single task.
-4. **Build SDL3 3.4.18 for UWP** with the two patches the other ports needed (WinRT pixel-format
-   return type; WGI 14-button mapping), plus whatever the first compile asks for.
+4. **Port SDL2's WinRT backend into SDL3** and build it for UWP (section 7). Largest task after
+   Dozen, and on the critical path for a first frame.
 5. **Build FFmpeg (LGPL) and shaderc for UWP**, static.
 6. **Two-stage packaging**: `make gen && make` on the PC, then the CMake project, then
    `Package-Uwp.ps1` with `skygame.dll` + `skygame.dll.id` in the layout.
