@@ -27,6 +27,7 @@
 #include <windows.graphics.display.h>
 #include <windows.storage.h>
 #include <windows.system.h>
+#include <windows.system.profile.h>
 #include <windows.ui.core.h>
 
 #include <cstdint>
@@ -67,6 +68,82 @@ void entry_log(const wchar_t *line) {
     }
 }
 
+// A crash on a console leaves nothing behind: no console, no debugger, no crash dump the Device
+// Portal will show you. The first version of this package did exactly that - it started, died, and
+// LocalState was empty, which told us nothing. So every way this process can end writes one line
+// first, and the runtime's own log is flushed so the last thing it said survives too.
+void log_hresult(const wchar_t *stage, HRESULT hr) {
+    wchar_t line[256];
+    // The stage text is a literal in this file and always short; the cast silences the 260 that
+    // the format would otherwise demand without weakening the copy.
+    swprintf_s(line, L"%s failed: 0x%08X", stage, static_cast<unsigned>(hr));
+    entry_log(line);
+}
+
+void flush_logs() {
+    // The runtime's log is a FILE* in uwp.c and this file's is opened per line, so the CRT's own
+    // flush point covers both.
+    ::_flushall();
+}
+
+// Lifecycle and failure events are registered as early as possible - in Initialize(), before the
+// window exists - because the failures worth catching are the ones that happen before there is
+// anywhere to catch them. Handlers are free of captures so they survive whatever the app model
+// does with the delegates.
+void register_lifetime_handlers() {
+    using namespace Windows::ApplicationModel::Core;
+
+    // Fires on the UI thread for an exception that reached the top of a message. It does not fire
+    // for a fail-fast (access violation, stack overflow) - nothing in user mode does - so this is
+    // diagnostic coverage, not a safety net.
+    CoreApplication::UnhandledException +=
+        ref new UnhandledExceptionEventHandler([](Platform::Object ^, UnhandledExceptionEventArgs ^ e) {
+            wchar_t line[512];
+            const wchar_t *msg = e->Message ? e->Message->Data() : L"(no message)";
+            HRESULT hr = e->Exception ? e->Exception->HResult : E_FAIL;
+            swprintf_s(line, L"UNHANDLED %s (0x%08X)", msg, static_cast<unsigned>(hr));
+            entry_log(line);
+            flush_logs();
+            e->Handled = false;  // let the app model do what it would have done anyway
+        });
+
+    // The async half: an IAsyncAction or IAsyncOperation completed with an error that nobody
+    // observed. This is where an out-of-memory in the renderer's setup would surface.
+    CoreApplication::UnhandledErrorDetected +=
+        ref new UnhandledErrorDetectedEventHandler([](Platform::Object ^, UnhandledErrorDetectedEventArgs ^ e) {
+            try {
+                const wchar_t *msg = e->UnhandledError->Message ? e->UnhandledError->Message->Data() : L"(no message)";
+                std::wstring line(L"UNHANDLED ASYNC ");
+                line += msg;
+                entry_log(line.c_str());
+                flush_logs();
+            } catch (...) {
+            }
+        });
+
+    // On Xbox the app is suspended when the user returns to the dashboard, and there is a short
+    // budget to finish up. Nothing here needs to save yet (the runtime's saves are its own), but
+    // the log must be on disk, or the session that ended badly leaves no trace at all.
+    CoreApplication::Suspending +=
+        ref new Windows::Foundation::EventHandler<Windows::ApplicationModel::SuspendingEventArgs ^>(
+            [](Platform::Object ^, Windows::ApplicationModel::SuspendingEventArgs ^ e) {
+            (void)e;
+            entry_log(L"SUSPENDED (returning to the dashboard)");
+            flush_logs();
+        });
+
+    CoreApplication::Resuming +=
+        ref new Windows::Foundation::EventHandler<Platform::Object ^>([](Platform::Object ^, Platform::Object ^) {
+            entry_log(L"RESUMED");
+        });
+
+    CoreApplication::Exiting +=
+        ref new Windows::Foundation::EventHandler<Platform::Object ^>([](Platform::Object ^, Platform::Object ^) {
+            entry_log(L"EXITING");
+            flush_logs();
+        });
+}
+
 [[noreturn]] void entry_fail(const wchar_t *stage, const wchar_t *why) {
     std::wstring text(stage);
     text += L": ";
@@ -85,6 +162,10 @@ public:
     // folder objects are read in Load(), which is documented to run after this.
     virtual void Initialize(Windows::ApplicationModel::Core::CoreApplicationView ^ appView) {
         (void)appView;
+        // Before anything else can fail: from here on, every failure writes a line to
+        // <LocalState>\entry.log instead of vanishing.
+        register_lifetime_handlers();
+        entry_log(L"activated");
     }
 
     virtual void SetWindow(Windows::UI::Core::CoreWindow ^ window) {
@@ -106,6 +187,28 @@ public:
         if (!uwp_present_set_core_window(reinterpret_cast<::IUnknown *>(window), pw, ph)) {
             entry_log(L"SetWindow: the presentation bridge refused the CoreWindow");
         }
+
+        // A change of display mode changes Bounds without a new call to SetWindow. The bridge is
+        // asked for its size once per frame, so handing it the new one here is all the renderer
+        // needs to see: it recreates the swapchain when the request and the current one differ.
+        window->SizeChanged +=
+            ref new Windows::Foundation::TypedEventHandler<Windows::UI::Core::CoreWindow ^,
+                                                          Windows::UI::Core::WindowSizeChangedEventArgs ^>(
+                [](Windows::UI::Core::CoreWindow ^ w, Windows::UI::Core::WindowSizeChangedEventArgs ^ e) {
+                    (void)e;
+                    auto bounds = w->Bounds;
+                    float dpi = 96.0f;
+                    try {
+                        dpi = Windows::Graphics::Display::DisplayInformation::GetForCurrentView()->LogicalDpi;
+                    } catch (...) {
+                    }
+                    uint32_t nw = static_cast<uint32_t>(bounds.Width * dpi / 96.0f + 0.5f);
+                    uint32_t nh = static_cast<uint32_t>(bounds.Height * dpi / 96.0f + 0.5f);
+                    if (!uwp_present_set_core_window(reinterpret_cast<::IUnknown *>(w), nw, nh)) return;
+                    wchar_t line[128];
+                    swprintf_s(line, L"window resized: %ux%u", nw, nh);
+                    entry_log(line);
+                });
     }
 
     virtual void Load(Platform::String ^ entryPoint) {
@@ -124,6 +227,24 @@ public:
             line += L" install=";
             line += install->Data();
             entry_log(line.c_str());
+
+            // Which console and which OS build: when a package behaves differently on one machine
+            // than another, this is the first question and the answer is otherwise unavailable.
+            try {
+                auto version = Windows::System::Profile::AnalyticsInfo::VersionInfo;
+                std::wstring info(L"platform: family=");
+                info += version->DeviceFamily->Data();
+                info += L" version=";
+                info += version->DeviceFamilyVersion->Data();
+                auto id = Windows::ApplicationModel::Package::Current->Id;
+                wchar_t pkg[96];
+                swprintf_s(pkg, L" package=%u.%u.%u.%u", id->Version.Major, id->Version.Minor,
+                           id->Version.Build, id->Version.Revision);
+                info += pkg;
+                entry_log(info.c_str());
+            } catch (...) {
+                entry_log(L"platform: could not read the OS version");
+            }
         } catch (Platform::Exception ^ e) {
             entry_fail(L"resolving the app's directories", e->Message->Data());
         } catch (...) {
