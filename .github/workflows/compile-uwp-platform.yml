@@ -83,6 +83,19 @@ jobs:
           git clone -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers vkheaders
           ls vkheaders/include/vulkan/vulkan_core.h
 
+      - name: Fetch the renderer's third-party headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          # device.c is the one file the port changes that the clang-cl checks cannot see: it is not
+          # a platform file, so it has no place in the /fsyntax-only list above. Compiling it needs
+          # the headers it actually includes, at the versions the project pins.
+          # SDL3 3.4.18 is the version tools/build_deps_macos.sh fetches; 3.2 has no SDL_SavePNG,
+          # which device.c's screenshot path calls.
+          git clone -q --depth 1 --branch release-3.4.18 https://github.com/libsdl-org/SDL sdl3
+          git clone -q --depth 1 https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator vma
+          grep -m1 'define SDL_MICRO_VERSION' sdl3/include/SDL3/SDL_version.h
+
       - name: Set up the MSVC/UWP environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
@@ -192,6 +205,30 @@ jobs:
           head -40 entry-diag.txt
           exit 0
 
+      - name: Compile the renderer in the console configuration
+        id: renderer
+        shell: bash
+        run: |
+          # zig (PyPI) ships clang and a mingw sysroot, which is how the project already builds for
+          # Windows: upstream's Makefile calls `zig cc`. That makes it the one compiler available
+          # here that can compile device.c for a Windows target with SKYRECOMP_UWP on, including
+          # <windows.h>, <unistd.h> and the Vulkan/SDL headers - i.e. the configuration that ships,
+          # not a host-only approximation of it.
+          set +e
+          python -m pip install --quiet ziglang
+          dep="$PWD"
+          ( cd upstream && python -m ziglang cc \
+              -target x86_64-windows-gnu -std=gnu11 -c -o "$dep/renderer.o" \
+              -DSKYRECOMP_UWP=1 -DWINAPI_FAMILY=WINAPI_FAMILY_APP -D_CRT_APP \
+              -O0 -Wno-unused-command-line-argument \
+              -Iruntime -Iruntime/nvn -Iruntime/nvn/vulkan \
+              -I"$dep/vkheaders/include" -I"$dep/sdl3/include" -I"$dep/vma/include" \
+              runtime/nvn/vulkan/device.c ) > renderer-diag.txt 2>&1
+          status=$?
+          echo "zig cc (device.c, SKYRECOMP_UWP) exit: $status"
+          grep -v 'unused during compilation' renderer-diag.txt | tail -40
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
       - name: Report diagnostics as annotations
         if: always()
         shell: bash
@@ -203,6 +240,10 @@ jobs:
           if [ -f entry-diag.txt ]; then
             $PY port/xbox-uwp/port/annotate-diagnostics.py entry-diag.txt \
                 --root upstream --status "${{ steps.entry.outputs.status }}"
+          fi
+          if [ -f renderer-diag.txt ]; then
+            $PY port/xbox-uwp/port/annotate-diagnostics.py renderer-diag.txt \
+                --root upstream --status "${{ steps.renderer.outputs.status }}"
           fi
           exit 0
 
@@ -218,8 +259,12 @@ jobs:
             echo "::error::uwp_entry.cpp does not compile with /ZW (see annotations)"
             fail=1
           fi
+          if [ "${{ steps.renderer.outputs.status }}" != "0" ]; then
+            echo "::error::the patched runtime/nvn/vulkan/device.c does not compile for the console (see annotations)"
+            fail=1
+          fi
           [ "$fail" = "0" ] || exit 1
-          echo "uwp.c and uwp_entry.cpp both compile in the UWP configuration"
+          echo "uwp.c, uwp_entry.cpp and the patched device.c all compile in the UWP configuration"
 
       - name: Upload the raw diagnostics
         if: always()
@@ -229,5 +274,6 @@ jobs:
           path: |
             diag.txt
             entry-diag.txt
+            renderer-diag.txt
           if-no-files-found: ignore
           retention-days: 14

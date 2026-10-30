@@ -1,5 +1,5 @@
 diff --git a/runtime/nvn/vulkan/device.c b/runtime/nvn/vulkan/device.c
-index 01faf83..6de59ba 100644
+index 01faf83..450c15a 100644
 --- a/runtime/nvn/vulkan/device.c
 +++ b/runtime/nvn/vulkan/device.c
 @@ -17,12 +17,20 @@
@@ -44,7 +44,7 @@ index 01faf83..6de59ba 100644
      if (g_vk.qfam == UINT32_MAX) FATAL("no graphics+present queue\n");
      LOG("[vk] using %s\n", g_vk.props.deviceName);
  }
-@@ -157,13 +171,23 @@ static void create_device(void) {
+@@ -157,13 +171,26 @@ static void create_device(void) {
      uint32_t ne = 0;
      vkEnumerateDeviceExtensionProperties(g_vk.phys, NULL, &ne, NULL);
      VkExtensionProperties *ep = calloc(ne, sizeof *ep);
@@ -56,9 +56,12 @@ index 01faf83..6de59ba 100644
 +    // export an image's memory as a D3D12 resource. VK_KHR_external_memory and
 +    // VK_KHR_dedicated_allocation are core in Vulkan 1.1, which is the floor here, so only the
 +    // Win32 half has to be asked for.
-+    if (!has_ext(ep, ne, VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME))
++    // By name, not by constant: VK_KHR_external_memory_win32's macro only exists when
++    // VK_USE_PLATFORM_WIN32_KHR is defined, which would drag <vulkan_win32.h> and its Windows types
++    // into every translation unit for one string. The bridge looks the function up the same way.
++    if (!has_ext(ep, ne, "VK_KHR_external_memory_win32"))
 +        FATAL("the Vulkan driver has no VK_KHR_external_memory_win32: it cannot share an image with D3D12\n");
-+    ext[n_ext++] = VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME;
++    ext[n_ext++] = "VK_KHR_external_memory_win32";
 +#else
      ext[n_ext++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
 +#endif
@@ -68,7 +71,7 @@ index 01faf83..6de59ba 100644
      if (g_vk.divisor) ext[n_ext++] = VK_EXT_VERTEX_ATTRIBUTE_DIVISOR_EXTENSION_NAME;
      g_vk.host_import = has_ext(ep, ne, VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);  // guest heap as a GPU buffer (exec.c)
      if (g_vk.host_import) ext[n_ext++] = VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME;
-@@ -287,12 +311,31 @@ static VkPresentModeKHR present_mode(void) {
+@@ -287,12 +314,31 @@ static VkPresentModeKHR present_mode(void) {
      vkGetPhysicalDeviceSurfacePresentModesKHR(g_vk.phys, g_vk.surface, &n, m);
      for (uint32_t i = 0; i < n; i++) if (m[i] == want) return want;
      return VK_PRESENT_MODE_FIFO_KHR;
@@ -100,7 +103,7 @@ index 01faf83..6de59ba 100644
      SDL_GetWindowSizeInPixels(window, &w, &h);
      VkExtent2D ext = caps.currentExtent.width != UINT32_MAX ? caps.currentExtent : (VkExtent2D){(uint32_t)w, (uint32_t)h};
      if (!ext.width || !ext.height) return;  // minimised
-@@ -337,12 +380,13 @@ static void create_swapchain(void) {
+@@ -337,12 +383,13 @@ static void create_swapchain(void) {
      for (uint32_t i = 0; i < g_vk.sc_count; i++) {
          VkImageViewCreateInfo vi = {.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, .image = g_vk.sc_images[i],
                                      .viewType = VK_IMAGE_VIEW_TYPE_2D, .format = sf.format,
@@ -114,7 +117,7 @@ index 01faf83..6de59ba 100644
      vkDeviceWaitIdle(g_vk.dev);
      create_swapchain();
  }
-@@ -377,30 +421,47 @@ typedef struct { uint32_t image; VkSemaphore acquired; bool ok; } Frame;
+@@ -377,30 +424,47 @@ typedef struct { uint32_t image; VkSemaphore acquired; bool ok; } Frame;
  static Frame cur_frame;
  
  // Acquire the next window image and begin rendering into it (cleared to `clear`). Returns false when there is
@@ -162,7 +165,7 @@ index 01faf83..6de59ba 100644
      image_barrier(cb, g_vk.sc_images[cur_frame.image], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
      VkRenderingAttachmentInfo ca = {.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO, .imageView = g_vk.sc_views[cur_frame.image],
                                      .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-@@ -454,21 +515,30 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
+@@ -454,21 +518,30 @@ static void save_window_image(VkCommandBuffer cb, VkSpan *out) {
  void vk_frame_end(const char *shot_path) {
      if (!cur_frame.ok) return;
      VkCommandBuffer cb = vk_cmd();
@@ -194,7 +197,7 @@ index 01faf83..6de59ba 100644
          uint32_t w = g_vk.sc_extent.width, h = g_vk.sc_extent.height;
          uint8_t *px = shot.ptr;
          bool bgr = g_vk.sc_format == VK_FORMAT_B8G8R8A8_UNORM || g_vk.sc_format == VK_FORMAT_B8G8R8A8_SRGB;
-@@ -770,35 +840,45 @@ void ui_window_init(void) {
+@@ -770,35 +843,45 @@ void ui_window_init(void) {
          // keyboard focus from whatever the player is doing
          const char *v = getenv("LARECOMP_NO_USER_INPUT");
          bool scripted = v ? atoi(v) != 0 : (getenv("LARECOMP_INPUT") || getenv("LARECOMP_DOORJUMP_TEST") || getenv("LARECOMP_PLACE") ||
