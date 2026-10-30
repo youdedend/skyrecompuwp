@@ -370,6 +370,13 @@ $DisplayName - Xbox UWP package (Developer Mode sideloading only)
 Contents
   $msixName$(if ($cerOut) { "`n  $PackageName.cer      signing certificate - trust this on the console first" })$(if ($vclibsName) { "`n  dependencies\$vclibsName`n                        VC++ runtime framework - install BEFORE the app" })
 
+Game files
+  Put the extracted game folder on a USB stick as <drive>:\<anything>\extracted
+  (the 'extracted' folder is what the runtime looks for). Plug it in, start the app,
+  and it uses the stick as its data folder - game files, saves and seeds all live
+  there, and the log says so. Without a stick it uses the app's LocalState folder,
+  which the Device Portal can show you under File Explorer.
+
 Game code
 $(if ($hasGameCode) { "  included: skygame.dll, built from your own game files (id $gameId)" } else { "  NOT INCLUDED - this is a smoke test. It starts, says the package has no game" + "`n  code in it, and exits. Re-package with -GameDir to get a playable build." })
 

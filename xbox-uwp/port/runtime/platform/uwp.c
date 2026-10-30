@@ -116,6 +116,105 @@ void uwp_set_install_dir(const wchar_t *path) {
     utf8_from_wide(path, g_install_dir, sizeof g_install_dir);
 }
 
+// ---- removable storage (USB) -------------------------------------------------------------
+// The console has no file picker and no way to reach a drive except through the removableStorage
+// capability, which the manifest declares. What that capability actually grants is a question a
+// port has to answer by measuring, not by reading: it adds the volume's ACL to the package, and
+// whether that is enough for the classic Win32 calls this runtime is built on (CreateFile, fopen,
+// FindFirstFile) or only for the WinRT storage APIs can only be settled on the console. So this
+// scans, probes and logs one line per drive, and picks a data root only when it is sure. The log
+// from the first run with a stick plugged in is the answer to the question, either way.
+//
+// A folder is a usable game folder if it contains `extracted`, which is where runtime/paths.c
+// expects the game files. It must also be writable, because the data root holds the saves too: a
+// read-only stick is reported, not silently used.
+static char g_usb_root[MAX_PATH * 3];
+
+static bool dir_exists(const char *p) {
+    DWORD a = GetFileAttributesA(p);
+    return a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+static bool writable_dir(const char *p) {
+    char probe[MAX_PATH * 3];
+    snprintf(probe, sizeof probe, "%s\\.skyrecomp-write-test", p);
+    FILE *f = fopen(probe, "wb");
+    if (!f) return false;
+    fclose(f);
+    remove(probe);
+    return true;
+}
+
+// Returns the best writable game root, or NULL. Every drive that exists is logged with the reason
+// it was or was not taken: drive letter assignment on a console is not something to guess at.
+static const char *scan_removable(void) {
+    DWORD mask = GetLogicalDrives();
+    if (!mask) {
+        fprintf(stderr, "[usb] cannot enumerate drives (error %lu)\n", GetLastError());
+        return NULL;
+    }
+    char best[MAX_PATH * 3] = {0};
+    for (int i = 0; i < 26; i++) {
+        if (!(mask & (1u << i))) continue;
+        char root[8];
+        snprintf(root, sizeof root, "%c:\\", 'A' + i);
+        UINT type = GetDriveTypeA(root);
+        if (type == DRIVE_NO_ROOT_DIR || type == DRIVE_UNKNOWN) continue;
+        // The package lives on the system drive; a stick is reported as removable, or as fixed on a
+        // console that provisions external storage for the sandbox.
+        const char *kind = type == DRIVE_REMOVABLE ? "removable"
+                         : type == DRIVE_FIXED     ? "fixed"
+                         : type == DRIVE_CDROM     ? "cdrom" : "other";
+        if (GetFileAttributesA(root) == INVALID_FILE_ATTRIBUTES) {
+            fprintf(stderr, "[usb] %s %s: Win32 access refused (error %lu)\n", root, kind, GetLastError());
+            continue;
+        }
+
+        // The drive root itself, then one folder below it: a stick prepared on a PC is usually
+        // X:\<something>\extracted.
+        char found[MAX_PATH * 3] = {0};
+        char base[MAX_PATH * 3];
+        snprintf(base, sizeof base, "%s", root);
+        size_t blen = strlen(base);
+        if (blen && (base[blen - 1] == '\\' || base[blen - 1] == '/')) base[blen - 1] = 0;
+
+        char ex[MAX_PATH * 3];
+        snprintf(ex, sizeof ex, "%s\\extracted", base);
+        if (dir_exists(ex)) snprintf(found, sizeof found, "%s", base);
+
+        if (!found[0]) {
+            char pat[MAX_PATH * 3];
+            snprintf(pat, sizeof pat, "%s\\*", base);
+            WIN32_FIND_DATAA d;
+            HANDLE h = FindFirstFileA(pat, &d);
+            if (h == INVALID_HANDLE_VALUE) {
+                fprintf(stderr, "[usb] %s %s: readable, cannot list (error %lu)\n", root, kind, GetLastError());
+                continue;
+            }
+            do {
+                if (!(d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                if (!strcmp(d.cFileName, ".") || !strcmp(d.cFileName, "..")) continue;
+                char sub[MAX_PATH * 3];
+                snprintf(sub, sizeof sub, "%s\\%s", base, d.cFileName);
+                snprintf(ex, sizeof ex, "%s\\extracted", sub);
+                if (dir_exists(ex)) { snprintf(found, sizeof found, "%s", sub); break; }
+            } while (FindNextFileA(h, &d));
+            FindClose(h);
+        }
+
+        if (!found[0]) {
+            fprintf(stderr, "[usb] %s %s: readable, no game files (no extracted/ at the top or one folder down)\n",
+                    root, kind);
+            continue;
+        }
+        bool w = writable_dir(found);
+        fprintf(stderr, "[usb] %s %s: GAME FILES at %s (%s)\n", root, kind, found, w ? "writable" : "read-only");
+        if (w && !best[0]) snprintf(best, sizeof best, "%s", found);
+    }
+    if (best[0]) snprintf(g_usb_root, sizeof g_usb_root, "%s", best);
+    return best[0] ? g_usb_root : NULL;
+}
+
 const char *uwp_local_state_dir(void) { resolve_paths(); return g_local_state; }
 const char *uwp_install_dir(void)    { resolve_paths(); return g_install_dir; }
 
@@ -326,7 +425,19 @@ void plat_init(void) {
     // first thing the game does is try to mkdir there, fail its own writability check and exit with
     // the desktop message about moving the folder out of Program Files. LocalState is the folder the
     // app may write and the Device Portal can show, so that is the data root.
-    setenv("LARECOMP_DATA_ROOT", g_local_state, 1);
+    //
+    // A USB stick with game files wins if it is writable: the dump is tens of gigabytes, copying it
+    // into LocalState is a wait nobody wants, and saves sitting next to the game are what a person
+    // expects from a memory card. Either way the choice and its reason are in the log.
+    const char *usb = scan_removable();
+    if (usb) {
+        setenv("LARECOMP_DATA_ROOT", usb, 1);
+        fprintf(stderr, "[paths] data root: USB (%s)\n", usb);
+    } else {
+        setenv("LARECOMP_DATA_ROOT", g_local_state, 1);
+        fprintf(stderr, "[paths] data root: LocalState (%s)%s\n", g_local_state,
+                g_usb_root[0] ? " - a stick has game files but is read-only" : "");
+    }
 
     require_cpu();
     // No console, no timeBeginPeriod, no SetProcessInformation, no SetConsoleOutputCP in UWP:
