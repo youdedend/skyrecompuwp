@@ -90,6 +90,11 @@
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
+      <!-- REQUIRED for a C++/CX UWP app: emits WinRT activation metadata (linker /WINMD).
+           Without it the package deploys and registers, then terminates at activation with
+           nothing in LocalState - the exact failure seen on console. Microsoft's Xbox ATG
+           UWP samples set this on every configuration. -->
+      <GenerateWindowsMetadata>true</GenerateWindowsMetadata>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>d3d11.lib;dxgi.lib;windowsapp.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>

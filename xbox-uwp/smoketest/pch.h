@@ -34,6 +34,7 @@
 #include <dxgi1_6.h>
 
 #include <cmath>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -46,6 +47,7 @@
 // WinRT. Included explicitly rather than relied upon transitively: header ordering in
 // the WinRT projections is not something to gamble the first console build on.
 #include <windows.foundation.h>
+#include <windows.applicationmodel.h>
 #include <windows.applicationmodel.activation.h>
 #include <windows.applicationmodel.core.h>
 #include <windows.ui.core.h>

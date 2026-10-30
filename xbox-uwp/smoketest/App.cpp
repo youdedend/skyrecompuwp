@@ -10,11 +10,89 @@ using namespace Windows::UI::Core;
 using namespace Windows::Graphics::Display;
 using namespace Windows::System;
 using namespace Windows::Foundation;
+using namespace Windows::Storage;
 
 using namespace SkyRecompUwpSmoke;
 
+// ------------------------------------------------------------------ diagnostics
+//
+// The v0.1.x build crashed on console leaving LocalState empty, because it only used
+// OutputDebugString (no listener on a console) and never opened a file. Everything below
+// exists so the next failure is diagnosable remotely.
+//
+// The log is opened per line with CreateFile2(FILE_APPEND_DATA) and closed immediately:
+// no FlushFileBuffers (not in the UWP API allowlist), no handle lifetime to get wrong, and
+// a crash between lines can never lose what was already written.
+
 namespace {
-    inline void ThrowIfFailed(HRESULT hr) {
+
+    char g_logPath[MAX_PATH] = { 0 };
+    bool g_logPathValid = false;
+    LARGE_INTEGER g_qpcFreq = { 0 };
+    LARGE_INTEGER g_qpcStart = { 0 };
+
+    double NowSeconds()
+    {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        if (g_qpcFreq.QuadPart == 0) { return 0.0; }
+        return double(now.QuadPart - g_qpcStart.QuadPart) / double(g_qpcFreq.QuadPart);
+    }
+
+    void LogInit()
+    {
+        if (!QueryPerformanceFrequency(&g_qpcFreq)) { g_qpcFreq.QuadPart = 0; }
+        QueryPerformanceCounter(&g_qpcStart);
+
+        try
+        {
+            // <LocalState> is ApplicationData.LocalFolder: writable from an AppContainer and
+            // readable through the Xbox Device Portal file browser.
+            String^ folder = ApplicationData::Current->LocalFolder->Path;
+            if (folder != nullptr)
+            {
+                // Platform::String::Data() is const char16*; on Windows char16 and wchar_t are
+                // both 16-bit but distinct types, so this cast is required (the ATG samples do
+                // the same). String contents here are pure ASCII path characters.
+                const wchar_t* p = reinterpret_cast<const wchar_t*>(folder->Data());
+                if (wcslen(p) < (MAX_PATH - 16))
+                {
+                    wcscpy_s(g_logPath, MAX_PATH, "\\\\?\\");
+                    wcscat_s(g_logPath, MAX_PATH, p);
+                    wcscat_s(g_logPath, MAX_PATH, "\\smoke.log");
+                    g_logPathValid = true;
+                }
+            }
+        }
+        catch (...) { g_logPathValid = false; }
+    }
+
+    void Log(const char* fmt, ...)
+    {
+        char line[1024];
+        va_list args;
+        va_start(args, fmt);
+        _vsnprintf_s(line, sizeof line, _TRUNCATE, fmt, args);
+        va_end(args);
+
+        char out[1152];
+        sprintf_s(out, sizeof out, "[%8.3f] %s\r\n", NowSeconds(), line);
+        OutputDebugStringA(out);
+
+        if (!g_logPathValid) { return; }
+        wchar_t wide[MAX_PATH];
+        MultiByteToWideChar(CP_UTF8, 0, g_logPath, -1, wide, MAX_PATH);
+        HANDLE h = CreateFile2(wide, FILE_APPEND_DATA, FILE_SHARE_READ, OPEN_ALWAYS, nullptr);
+        if (h != INVALID_HANDLE_VALUE)
+        {
+            DWORD written = 0;
+            WriteFile(h, out, (DWORD)strlen(out), &written, nullptr);
+            CloseHandle(h);   // closing flushes metadata; no FlushFileBuffers needed
+        }
+    }
+
+    inline void ThrowIfFailed(HRESULT hr)
+    {
         if (FAILED(hr)) { throw Exception::CreateException(hr); }
     }
 }
@@ -24,9 +102,12 @@ namespace {
 App::App()
     : m_windowClosed(false)
     , m_visible(true)
+    , m_stage(Stage::Start)
+    , m_failedAt(0.0)
+    , m_logReady(false)
 {
-    QueryPerformanceFrequency(&m_qpcFrequency);
-    QueryPerformanceCounter(&m_qpcStart);
+    // Logging starts in Initialize()/main(): ApplicationData::Current is not reliably
+    // available during construction.
 }
 
 IFrameworkView^ AppSource::CreateView()
@@ -34,33 +115,92 @@ IFrameworkView^ AppSource::CreateView()
     return ref new App();
 }
 
+void App::SetStage(Stage stage)
+{
+    m_stage = stage;
+    const char* names[] = { "Start", "AppInitialized", "WindowSet", "DeviceCreated",
+                            "SwapChainCreated", "Running", "Failed" };
+    int idx = (int)stage;
+    if (idx < 0 || idx > 6) { idx = 6; }
+    Log("stage -> %s", names[idx]);
+}
+
+void App::Fail(const char* what, HRESULT hr)
+{
+    m_failedAt = NowSeconds();
+    Log("FAILED: %s (hr=0x%08X)", what, (unsigned)hr);
+    SetStage(Stage::Failed);
+}
+
+// ------------------------------------------------------------------ framework entry points
+// Every one of these is called by the UWP application model outside any try/catch of ours,
+// so an escaping exception would terminate the process with no evidence. Each is contained.
+
 void App::Initialize(CoreApplicationView^ applicationView)
 {
-    applicationView->Activated +=
-        ref new TypedEventHandler<CoreApplicationView^, IActivatedEventArgs^>(this, &App::OnActivated);
+    try
+    {
+        if (!m_logReady)
+        {
+            LogInit();
+            m_logReady = true;
+            Log("=== SkyRecomp UWP smoke %s ===", "0.2.0");
+            Log("log: %s", g_logPathValid ? g_logPath : "(no path - logging disabled)");
+        }
 
-    CoreApplication::Suspending +=
-        ref new EventHandler<SuspendingEventArgs^>(this, &App::OnSuspending);
+        applicationView->Activated +=
+            ref new TypedEventHandler<CoreApplicationView^, IActivatedEventArgs^>(this, &App::OnActivated);
 
-    CoreApplication::Resuming +=
-        ref new EventHandler<Object^>(this, &App::OnResuming);
+        CoreApplication::Suspending +=
+            ref new EventHandler<SuspendingEventArgs^>(this, &App::OnSuspending);
+
+        CoreApplication::Resuming +=
+            ref new EventHandler<Object^>(this, &App::OnResuming);
+
+        SetStage(Stage::AppInitialized);
+    }
+    catch (Exception^ e)
+    {
+        Fail("Initialize", e->HResult);
+    }
+    catch (...)
+    {
+        Fail("Initialize (non-WinRT exception)", E_FAIL);
+    }
 }
 
 void App::SetWindow(CoreWindow^ window)
 {
-    window->SizeChanged +=
-        ref new TypedEventHandler<CoreWindow^, WindowSizeChangedEventArgs^>(this, &App::OnWindowSizeChanged);
+    try
+    {
+        window->SizeChanged +=
+            ref new TypedEventHandler<CoreWindow^, WindowSizeChangedEventArgs^>(this, &App::OnWindowSizeChanged);
 
-    window->Closed +=
-        ref new TypedEventHandler<CoreWindow^, CoreWindowEventArgs^>(this, &App::OnWindowClosed);
+        window->Closed +=
+            ref new TypedEventHandler<CoreWindow^, CoreWindowEventArgs^>(this, &App::OnWindowClosed);
 
-    window->KeyDown +=
-        ref new TypedEventHandler<CoreWindow^, KeyEventArgs^>(this, &App::OnKeyDown);
+        window->KeyDown +=
+            ref new TypedEventHandler<CoreWindow^, KeyEventArgs^>(this, &App::OnKeyDown);
 
-    m_windowBounds = window->Bounds;
+        m_windowBounds = window->Bounds;
+        Log("SetWindow: bounds=%.0fx%.0f", m_windowBounds.Width, m_windowBounds.Height);
 
-    CreateDeviceResources();
-    CreateWindowSizeDependentResources();
+        CreateDeviceResources();
+        SetStage(Stage::DeviceCreated);
+
+        CreateWindowSizeDependentResources();
+        SetStage(Stage::SwapChainCreated);
+
+        SetStage(Stage::WindowSet);
+    }
+    catch (Exception^ e)
+    {
+        Fail("SetWindow", e->HResult);
+    }
+    catch (...)
+    {
+        Fail("SetWindow (non-WinRT exception)", E_FAIL);
+    }
 }
 
 void App::Load(String^ /*entryPoint*/)
@@ -74,41 +214,91 @@ void App::Uninitialize()
 
 void App::Run()
 {
-    CoreWindow^ window = CoreWindow::GetForCurrentThread();
-
-    while (!m_windowClosed)
+    try
     {
-        if (m_visible)
+        CoreWindow^ window = CoreWindow::GetForCurrentThread();
+        if (!window)
         {
-            window->Dispatcher->ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
+            Fail("Run: CoreWindow::GetForCurrentThread returned null", E_UNEXPECTED);
+            return;
+        }
 
-            LARGE_INTEGER now;
-            QueryPerformanceCounter(&now);
-            const double elapsed = double(now.QuadPart - m_qpcStart.QuadPart) / double(m_qpcFrequency.QuadPart);
+        Log("Run: entering present loop");
+        if (m_stage != Stage::Failed) { SetStage(Stage::Running); }
 
-            Render(elapsed);
-
-            // Present with vsync. 1 = sync interval.
-            HRESULT hr = m_swapChain->Present(1, 0);
-            if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+        while (!m_windowClosed)
+        {
+            if (m_visible)
             {
-                // Nothing sensible to recover for a smoke test: exit and say so.
-                OutputDebugStringW(L"[smoke] device removed\n");
-                break;
+                window->Dispatcher->ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent);
+
+                const double elapsed = NowSeconds();
+
+                if (m_stage != Stage::Failed)
+                {
+                    if (m_swapChain && m_renderTargetView)
+                    {
+                        Render(elapsed);
+                        HRESULT hr = m_swapChain->Present(1, 0);
+                        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+                        {
+                            Fail("Present: device removed/reset", hr);
+                        }
+                        else if (FAILED(hr))
+                        {
+                            Fail("Present", hr);
+                        }
+                    }
+                    else
+                    {
+                        // Nothing to present with: keep the error visible instead of dying.
+                        if (m_d3dContext && m_renderTargetView)
+                        {
+                            const float red[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+                            m_d3dContext->ClearRenderTargetView(m_renderTargetView.Get(), red);
+                        }
+                    }
+
+                    if (elapsed >= kAutoExitSeconds)
+                    {
+                        Log("auto exit after %.1fs (stage reached)", elapsed);
+                        CoreApplication::Exit();
+                        break;
+                    }
+                }
+                else
+                {
+                    // Failed: show red for a while so the cause is visible in a screenshot,
+                    // then leave rather than sitting on a dead window forever.
+                    if (m_renderTargetView && m_d3dContext)
+                    {
+                        const float red[4] = { 0.8f, 0.05f, 0.05f, 1.0f };
+                        m_d3dContext->ClearRenderTargetView(m_renderTargetView.Get(), red);
+                        if (m_swapChain) { m_swapChain->Present(1, 0); }
+                    }
+                    if (NowSeconds() - m_failedAt > 30.0)
+                    {
+                        Log("failed window elapsed, exiting");
+                        CoreApplication::Exit();
+                        break;
+                    }
+                }
             }
-            ThrowIfFailed(hr);
-
-            if (elapsed >= kAutoExitSeconds)
+            else
             {
-                OutputDebugStringW(L"[smoke] auto exit\n");
-                CoreApplication::Exit();
-                break;
+                window->Dispatcher->ProcessEvents(CoreProcessEventsOption::ProcessOneAndAllPending);
             }
         }
-        else
-        {
-            window->Dispatcher->ProcessEvents(CoreProcessEventsOption::ProcessOneAndAllPending);
-        }
+
+        Log("Run: loop exited");
+    }
+    catch (Exception^ e)
+    {
+        Fail("Run", e->HResult);
+    }
+    catch (...)
+    {
+        Fail("Run (non-WinRT exception)", E_FAIL);
     }
 }
 
@@ -116,35 +306,63 @@ void App::Run()
 
 void App::OnActivated(CoreApplicationView^ /*sender*/, IActivatedEventArgs^ /*args*/)
 {
-    CoreWindow::GetForCurrentThread()->Activate();
+    try
+    {
+        CoreWindow^ window = CoreWindow::GetForCurrentThread();
+        if (window) { window->Activate(); }
+        Log("activated");
+    }
+    catch (Exception^ e)
+    {
+        Fail("OnActivated", e->HResult);
+    }
+    catch (...)
+    {
+        Fail("OnActivated (non-WinRT exception)", E_FAIL);
+    }
 }
 
 void App::OnSuspending(Object^ /*sender*/, SuspendingEventArgs^ /*args*/)
 {
     m_visible = false;
+    Log("suspending");
 }
 
 void App::OnResuming(Object^ /*sender*/, Object^ /*args*/)
 {
     m_visible = true;
+    Log("resuming");
 }
 
 void App::OnWindowClosed(CoreWindow^ /*sender*/, CoreWindowEventArgs^ /*args*/)
 {
     m_windowClosed = true;
+    Log("window closed");
 }
 
 void App::OnWindowSizeChanged(CoreWindow^ sender, WindowSizeChangedEventArgs^ /*args*/)
 {
-    m_windowBounds = sender->Bounds;
-    CreateWindowSizeDependentResources();
+    try
+    {
+        m_windowBounds = sender->Bounds;
+        Log("size changed: %.0fx%.0f", m_windowBounds.Width, m_windowBounds.Height);
+        if (m_d3dDevice) { CreateWindowSizeDependentResources(); }
+    }
+    catch (Exception^ e)
+    {
+        Fail("OnWindowSizeChanged", e->HResult);
+    }
+    catch (...)
+    {
+        Fail("OnWindowSizeChanged (non-WinRT exception)", E_FAIL);
+    }
 }
 
 void App::OnKeyDown(CoreWindow^ /*sender*/, KeyEventArgs^ args)
 {
-    // Escape and GoBack both map to "leave" on a pad/keyboard, depending on the OS build.
     if (args->VirtualKey == VirtualKey::Escape || args->VirtualKey == VirtualKey::GoBack)
     {
+        Log("exit requested by key 0x%02X", (unsigned)args->VirtualKey);
         m_windowClosed = true;
         CoreApplication::Exit();
     }
@@ -173,7 +391,6 @@ void App::CreateDeviceResources()
         m_d3dDevice.GetAddressOf(), &got, m_d3dContext.GetAddressOf());
 
 #if defined(_DEBUG)
-    // A dev machine without the Graphics Tools feature has no debug layer.
     if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING)
     {
         hr = D3D11CreateDevice(
@@ -182,11 +399,14 @@ void App::CreateDeviceResources()
             m_d3dDevice.GetAddressOf(), &got, m_d3dContext.GetAddressOf());
     }
 #endif
-    ThrowIfFailed(hr);
 
-    wchar_t msg[128];
-    swprintf_s(msg, L"[smoke] D3D11 device created, feature level 0x%x\n", unsigned(got));
-    OutputDebugStringW(msg);
+    if (FAILED(hr))
+    {
+        Fail("D3D11CreateDevice", hr);
+        return;   // keep the process alive; Run() will show red and log the reason
+    }
+
+    Log("D3D11CreateDevice ok, feature level 0x%X", (unsigned)got);
 }
 
 void App::CreateWindowSizeDependentResources()
@@ -196,13 +416,11 @@ void App::CreateWindowSizeDependentResources()
     ReleaseWindowSizeDependentResources();
 
     CoreWindow^ window = CoreWindow::GetForCurrentThread();
-    if (!window) { return; }
+    if (!window) { Fail("CreateWindowSizeDependentResources: no CoreWindow", E_UNEXPECTED); return; }
 
     const float dpi = DisplayInformation::GetForCurrentView()->LogicalDpi;
     const float scale = dpi / 96.0f;
 
-    // A 0x0 buffer is legal for a CoreWindow swap chain (it takes the window size),
-    // but being explicit keeps the resize path honest.
     UINT width  = UINT(window->Bounds.Width  * scale + 0.5f);
     UINT height = UINT(window->Bounds.Height * scale + 0.5f);
     if (width == 0)  { width = 1920; }
@@ -235,11 +453,14 @@ void App::CreateWindowSizeDependentResources()
         ThrowIfFailed(factory->CreateSwapChainForCoreWindow(
             dxgiDevice.Get(), reinterpret_cast<IUnknown*>(window),
             &desc, nullptr, m_swapChain.GetAddressOf()));
+
+        Log("swap chain created %ux%u (flip sequential)", width, height);
     }
     else
     {
         ThrowIfFailed(m_swapChain->ResizeBuffers(
             2, width, height, DXGI_FORMAT_B8G8R8A8_UNORM, 0));
+        Log("swap chain resized %ux%u", width, height);
     }
 
     ComPtr<ID3D11Texture2D> backBuffer;
@@ -247,8 +468,6 @@ void App::CreateWindowSizeDependentResources()
     ThrowIfFailed(m_d3dDevice->CreateRenderTargetView(
         backBuffer.Get(), nullptr, m_renderTargetView.GetAddressOf()));
 
-    // Bind the render target and the full viewport. Forgetting the viewport is the
-    // classic "black screen with a correct swap chain".
     ID3D11RenderTargetView* rtvs[] = { m_renderTargetView.Get() };
     m_d3dContext->OMSetRenderTargets(1, rtvs, nullptr);
 
@@ -274,13 +493,30 @@ void App::Render(double elapsedSeconds)
 {
     if (!m_renderTargetView) { return; }
 
-    // Animate so a frozen frame is immediately distinguishable from a working one.
-    const float t = float(elapsedSeconds);
-    const float r = 0.5f + 0.5f * sinf(t * 1.7f);
-    const float g = 0.5f + 0.5f * sinf(t * 2.3f + 2.1f);
-    const float b = 0.5f + 0.5f * sinf(t * 1.1f + 4.2f);
+    // Stage-coloured, so a screenshot alone narrows the failure down.
+    float clear[4];
+    switch (m_stage)
+    {
+    case Stage::Running:
+    {
+        // Animated: a frozen frame is immediately distinguishable from a working one.
+        const float t = float(elapsedSeconds);
+        const float r = 0.5f + 0.5f * sinf(t * 1.7f);
+        const float g = 0.5f + 0.5f * sinf(t * 2.3f + 2.1f);
+        const float b = 0.5f + 0.5f * sinf(t * 1.1f + 4.2f);
+        clear[0] = r * 0.35f; clear[1] = g * 0.35f; clear[2] = b * 0.45f; clear[3] = 1.0f;
+        break;
+    }
+    case Stage::Failed:  clear[0] = 0.80f; clear[1] = 0.05f; clear[2] = 0.05f; break;  // red
+    case Stage::Start:   clear[0] = 0.10f; clear[1] = 0.10f; clear[2] = 0.10f; break;  // grey
+    case Stage::AppInitialized:   clear[0] = 0.05f; clear[1] = 0.15f; clear[2] = 0.80f; break; // blue
+    case Stage::WindowSet:        clear[0] = 0.05f; clear[1] = 0.65f; clear[2] = 0.65f; break; // teal
+    case Stage::DeviceCreated:    clear[0] = 0.20f; clear[1] = 0.20f; clear[2] = 0.90f; break; // indigo
+    case Stage::SwapChainCreated: clear[0] = 0.10f; clear[1] = 0.80f; clear[2] = 0.30f; break; // green
+    default: clear[0] = clear[1] = clear[2] = 0.0f; break;
+    }
+    if (m_stage != Stage::Failed) { clear[3] = 1.0f; }
 
-    const float clear[4] = { r * 0.35f, g * 0.35f, b * 0.45f, 1.0f };
     m_d3dContext->ClearRenderTargetView(m_renderTargetView.Get(), clear);
 }
 
@@ -290,7 +526,14 @@ void App::Render(double elapsedSeconds)
 [Platform::MTAThread]
 int __cdecl main(Platform::Array<Platform::String^>^ /*argv*/)
 {
+    // Log before anything else can fail, so even an early death leaves a file behind.
+    LogInit();
+    Log("=== SkyRecomp UWP smoke 0.2.0 main() ===");
+    Log("log: %s", g_logPathValid ? g_logPath : "(no path - logging disabled)");
+
     auto source = ref new AppSource();
+    Log("AppSource created, calling CoreApplication::Run");
     CoreApplication::Run(source);
+    Log("CoreApplication::Run returned");
     return 0;
 }
