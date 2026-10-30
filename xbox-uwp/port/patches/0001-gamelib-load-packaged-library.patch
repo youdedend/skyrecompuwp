@@ -1,0 +1,49 @@
+diff --git a/runtime/gamelib.c b/runtime/gamelib.c
+index 5b47c4b..191d646 100644
+--- a/runtime/gamelib.c
++++ b/runtime/gamelib.c
+@@ -53,13 +53,25 @@ bool gamelib_present(const char *game_dir) {
+     for (int i = 0; i < n; i++)
+         if (exists(c[i]) && id_matches(c[i])) return true;
+     return false;
+ }
+ 
+ static const GameLibTables *open_lib(const char *path) {
+-#ifdef _WIN32
++#if defined(SKYRECOMP_UWP)
++    // An AppContainer loads only DLLs that are part of the package, and only by a path relative to the
++    // package root: no absolute paths, no "..", and LoadLibraryA/GetModuleHandle are refused at run time
++    // rather than at compile time. So the library is opened by its bare name - it is inside the package,
++    // built on a PC from the player's own game files - and `path` is used for nothing but messages.
++    (void)path;
++    HMODULE h = LoadPackagedLibrary(L"skygame.dll", 0);
++    if (!h) {
++        snprintf(g_error, sizeof g_error, "the package's game code is missing or won't load (error %lu)", GetLastError());
++        return NULL;
++    }
++    GameLibEntry entry = (GameLibEntry)(void *)GetProcAddress(h, GAMELIB_ENTRY);
++#elif defined(_WIN32)
+     HMODULE h = LoadLibraryA(path);
+     if (!h) { snprintf(g_error, sizeof g_error, "can't load %s (error %lu)", path, GetLastError()); return NULL; }
+     GameLibEntry entry = (GameLibEntry)(void *)GetProcAddress(h, GAMELIB_ENTRY);
+ #else
+     void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+     if (!h) { snprintf(g_error, sizeof g_error, "%s", dlerror()); return NULL; }
+@@ -75,13 +87,17 @@ static const GameLibTables *open_lib(const char *path) {
+ }
+ 
+ bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
+     static bool tried;
+     if (!tried) {
+         tried = true;
++#if defined(SKYRECOMP_UWP)
++        snprintf(g_error, sizeof g_error, "this package has no game code in it: build one on a PC from your game files");
++#else
+         snprintf(g_error, sizeof g_error, "the game code hasn't been built: set up the game files on the start screen");
++#endif
+         char c[3][1100];
+         int n = candidates(game_dir, c);
+         const char *env = getenv("LARECOMP_GAME_LIB");
+         for (int i = 0; i < n && !g_tables; i++) {
+             if (!exists(c[i])) continue;
+             bool given = i == 0 && env && *env;  // LARECOMP_GAME_LIB: loaded as given, the library's own id decides

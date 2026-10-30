@@ -15,6 +15,12 @@ xbox-uwp/
 ├── packaging/Package-Uwp.ps1          # stage -> makeappx -> signtool -> zip + SHA256SUMS
 ├── smoketest/                         # small D3D11 C++/CX UWP app: proves the pipeline
 ├── SkyRecompUwp/                      # the real runtime project (gated, currently #error)
+├── port/                              # the port itself: platform layer, patches, CMake, gate
+│   ├── PORT-INVENTORY.md              # every file/line that must change, measured
+│   ├── runtime/platform/uwp.c         # the 25 plat_* functions, replaces windows.c
+│   ├── patches/                       # four unified diffs against upstream f005a61
+│   ├── check-uwp-allowlist.py         # CI gate: no AppContainer-forbidden calls
+│   └── CMakeLists.txt                 # clang-cl + WindowsStore + Store CRT
 └── assets/app-icon.png                # 1024x1024 icon from the upstream repo (docs/icon)
 ```
 
@@ -25,6 +31,12 @@ xbox-uwp/
 console** via Mesa Dozen (Vulkan → D3D12), so the renderer does not need rewriting.
 [`manifest/Package.appxmanifest.port.in`](manifest/Package.appxmanifest.port.in) is the manifest
 those ports use, ready for the real app.
+
+[`port/PORT-INVENTORY.md`](port/PORT-INVENTORY.md) is the work list: the platform contract, the
+four patches, and the two design changes the port cannot patch away (the game code has to be
+inside the package, and file access has to be brokered). It also states plainly what has been
+verified and what has not — `uwp.c` has **never been compiled**, because nothing in this
+repository's CI can compile it.
 
 ## What the smoke test is for
 
