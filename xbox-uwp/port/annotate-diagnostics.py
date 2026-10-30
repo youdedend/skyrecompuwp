@@ -91,10 +91,14 @@ def main() -> int:
         print(f"::error::{len(found) - MAX_ANNOTATIONS} further diagnostics not shown (cap {MAX_ANNOTATIONS})")
 
     if not found:
-        # Unparseable failure: surface the raw output, which is usually the real story
-        # ("clang-cl: command not found", a broken environment, a missing header form).
-        print(f"::error::compiler failed with unrecognised output; first 900 characters follow%0A"
-              f"{escape(stripped[:900])}")
+        if args.status in (None, 0):
+            # Some compilers echo the source name and nothing else on a clean run (cl /Zs does).
+            print(f"::notice::{os.path.basename(args.diag)}: compiler exited 0 with no diagnostics")
+        else:
+            # Unparseable failure: surface the raw output, which is usually the real story
+            # ("clang-cl: command not found", a broken environment, a missing header form).
+            print(f"::error::compiler exited {args.status} with unrecognised output; "
+                  f"first 900 characters follow%0A{escape(stripped[:900])}")
     else:
         label = {"diag.txt": "uwp.c", "entry-diag.txt": "uwp_entry.cpp"}.get(os.path.basename(args.diag),
                                                                               os.path.basename(args.diag))

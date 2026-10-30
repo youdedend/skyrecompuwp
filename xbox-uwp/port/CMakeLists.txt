@@ -7,10 +7,17 @@ cmake_minimum_required(VERSION 3.25)
 # CMAKE_SYSTEM_NAME=WindowsStore, the Store CRT import libraries first on the link line,
 # /APPCONTAINER, fixed-address VA, and a 16 MB stack.
 #
-# STATUS: never configured or compiled. Nothing in this sandbox can do that. Prerequisites
-# below are hard errors on purpose, so a half-configured build stops immediately instead of
-# producing a package that fails at activation (which is exactly how the v0.1.x smoke package
-# wasted a console round trip).
+# ABI: the runtime and the game code it calls must be built by the same compiler. Upstream has no
+# sysv_abi/ms_abi anywhere and GuestFn is a plain function pointer, so the ABI is simply "whatever
+# built both sides" - on Windows upstream that is zig cc (System V). This port's runtime is
+# clang-cl, i.e. MSVC x64 ABI, which means the game code must also be built with clang-cl, not
+# zig. See PORT-INVENTORY.md section 4a.
+#
+# STATUS: the two files this project adds compile in CI (clang-cl for uwp.c, MSVC /ZW for
+# uwp_entry.cpp), but the project itself has never been configured: it needs the UWP builds of
+# Dozen, SDL3, FFmpeg and shaderc first. The prerequisites below are hard errors on purpose, so a
+# half-configured build stops immediately instead of producing a package that fails at activation
+# (which is exactly how the v0.1.x smoke package wasted a console round trip).
 
 set(CMAKE_SYSTEM_NAME WindowsStore)
 set(CMAKE_SYSTEM_VERSION 10.0)
@@ -83,17 +90,45 @@ list(FILTER SKY_RUNTIME_SRC EXCLUDE REGEX "/platform/(windows|macos|linux)\\.c$"
 # see section 9 step 2 - so this fails loudly rather than linking an executable nothing activates.
 set(SKY_UWP_ENTRY "${CMAKE_CURRENT_LIST_DIR}/runtime/platform/uwp_entry.cpp")
 if(NOT EXISTS "${SKY_UWP_ENTRY}")
-    message(FATAL_ERROR
-        "Missing ${SKY_UWP_ENTRY}\n"
-        "This is the C++/CX IFrameworkView the manifest's EntryPoint names; see PORT-INVENTORY.md "
-        "section 8 step 2. Nothing can activate a package built without it.")
+    message(FATAL_ERROR "Missing ${SKY_UWP_ENTRY} - the activatable class the manifest names.")
 endif()
 
 add_executable(skyrecomp_uwp WIN32
     ${SKY_RUNTIME_SRC} ${SKY_HLE_SRC} ${SKY_NVN_SRC} ${SKY_MAXWELL_SRC}
     ${SKY_VULKAN_SRC} ${SKY_UI_SRC}
-    "${CMAKE_CURRENT_LIST_DIR}/runtime/platform/uwp.c"
-    "${SKY_UWP_ENTRY}")
+    "${CMAKE_CURRENT_LIST_DIR}/runtime/platform/uwp.c")
+
+# ---- the activation host, which only MSVC can compile ---------------------------------
+# C++/CX (/ZW) is MSVC only; clang-cl cannot parse it. CMake cannot compile one target with two
+# compilers, so this file is built by an explicit command and its object is linked in with the
+# rest. Both compilers emit MSVC x64 ABI objects, which is what makes the mix legal. The linker
+# then needs /WINMD so the .winmd that carries the activatable class is produced - and that
+# .winmd has to end up in the package next to the executable, or activation cannot resolve
+# SkyRecomp.Uwp.App.
+find_program(SKY_MSVC_CL NAMES cl cl.exe)
+if(NOT SKY_MSVC_CL)
+    message(FATAL_ERROR "cl.exe not found: the C++/CX host needs the MSVC toolset on PATH (vcvars64).")
+endif()
+set(SKY_ENTRY_OBJ "${CMAKE_BINARY_DIR}/uwp_entry.obj")
+add_custom_command(
+    OUTPUT "${SKY_ENTRY_OBJ}"
+    COMMAND "${SKY_MSVC_CL}" /nologo /c /ZW /EHsc /W3
+            /D_WIN32_WINNT=0x0A00 /DWINAPI_FAMILY=WINAPI_FAMILY_APP /D_CRT_APP /D_CRT_SECURE_NO_WARNINGS
+            "/Fo${SKY_ENTRY_OBJ}" "${SKY_UWP_ENTRY}"
+    DEPENDS "${SKY_UWP_ENTRY}"
+    COMMENT "Compiling the C++/CX activation host with MSVC (/ZW)"
+    VERBATIM)
+target_sources(skyrecomp_uwp PRIVATE "${SKY_ENTRY_OBJ}")
+
+# main.c's main() is the runtime's entry; this host owns the real entry point, so the runtime's
+# is renamed at compile time rather than edited. uwp_entry.cpp calls skyrecomp_main(argc, argv).
+set_source_files_properties("${SKY_ROOT}/runtime/main.c" PROPERTIES
+    COMPILE_DEFINITIONS "main=skyrecomp_main")
+
+# The .winmd this produces is part of the package payload: it is what makes the manifest's
+# EntryPoint resolvable. Package-Uwp.ps1 stages the whole layout directory, so it travels with
+# the exe as long as both are written to the same place.
+target_link_options(skyrecomp_uwp PRIVATE /WINMD)
 
 set_source_files_properties(${SKY_UI_SRC} PROPERTIES LANGUAGE CXX)
 

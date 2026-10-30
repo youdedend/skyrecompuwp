@@ -20,7 +20,7 @@ that no amount of patching removes.
 | 8 | User files reachable only through brokering | design change | analysed, not built |
 | 9 | Mesa Dozen + `dxil.dll` | dependency to build | analysed, not built |
 | 10 | SDL3 + SDL2's WinRT backend ported in | dependency to build | analysed, not built |
-| 11 | Entry host, CMake project, CI compile gate | new files | CMake + gate written; host **not written** |
+| 11 | Entry host, CMake project, CI compile gate | new files | host **compiles** in CI; project never configured |
 
 ---
 
@@ -197,6 +197,33 @@ Consequences, stated plainly:
 
 ---
 
+## 4a. The ABI decides the toolchain — and it changes the PC-side build
+
+`grep -rn "sysv_abi\|ms_abi"` over the whole upstream tree returns **nothing**, and
+`runtime/cpu.h` declares `typedef void (*GuestFn)(Cpu *);` — a plain function pointer. So the
+calling convention of the recompiled game code is not annotated anywhere: it is simply whatever
+compiler produced it.
+
+Upstream, on Windows, that compiler is `zig cc` (mingw target, System V), and it builds *both*
+the runtime and the game code, so the two agree.
+
+This port's runtime is clang-cl, i.e. the **MSVC x64 ABI**. If the game code stayed on `zig`,
+every call through `GameLibTables` would cross an ABI boundary — different argument registers,
+different shadow space, silent corruption. The failure would not look like an ABI problem; it
+would look like random crashes in recompiled functions.
+
+Two consequences, both load-bearing:
+
+* **The game code must be built with clang-cl**, not zig, for the UWP package. `-mavx2 -mfma
+  -mbmi2` (the `x86-64-v3` set `GENARCH` asks for) are accepted by clang-cl, and `GAMELIB_EXPORT`
+  is already `__declspec(dllexport)` under `_WIN32`, so the generated C needs no changes — only
+  a different compiler.
+* The earlier note that clang-cl is "mandatory because of the System V guest ABI" (true for the
+  gow3 port, whose guest code was already generated) does not apply here. This project *chooses*
+  the ABI, and it chooses MSVC, because that is what the UWP toolchain can link.
+
+---
+
 ## 5. Design change: file I/O has to be brokered
 
 Upstream uses POSIX file APIs throughout, which map onto UWP fine **as long as the paths are
@@ -295,6 +322,7 @@ the memory limit is a fraction of the 5,120 MiB budget.
 | 0 hard violations after the port | checker run, quoted above |
 | game code must be in the package | `LoadPackagedLibrary` documentation + `gamelib.c:60` |
 | `uwp.c` **compiles** | **yes** — clang-cl `/fsyntax-only`, `WINAPI_FAMILY_APP` + `_CRT_APP` + `SKYRECOMP_UWP`, run `41052945145` green, 0 diagnostics |
+| `uwp.c` and `uwp_entry.cpp` **compile** | **yes** — clang-cl and `cl /ZW` in CI, run `41056498090` green |
 | `uwp.c` **runs on a console** | **no — never run** |
 | Dozen/SDL3/FFmpeg link | **no — none of them built for UWP yet** |
 
@@ -314,12 +342,11 @@ of it has been executed. Grep for the marker.
 
 1. ~~Build `uwp.c` with clang-cl on Windows~~ **Done** — `compile-uwp-platform.yml`, green.
    The gate is now permanent: any change here that breaks the UWP configuration fails CI.
-2. **Write `port/runtime/platform/uwp_entry.cpp`** — the entry host the manifest names. Shape is
-   now known (section 7): `wWinMain` + `SDL_RunApp`, with the WinRT app model coming from the
-   SDL fork. It must obtain `ApplicationData.Current.LocalFolder.Path` and
-   `Package.Current.InstalledLocation.Path` for `uwp.c` (the `%LOCALAPPDATA%` guess in `uwp.c` is
-   a marked fallback only), assert `AppMemoryUsageLimit() >= 2 GiB` so a wrong Dev Home app type
-   is a clear error rather than an out-of-memory, and start the log before anything else.
+2. ~~Write `port/runtime/platform/uwp_entry.cpp`~~ **Done** — `SkyRecomp.Uwp.App`, C++/CX,
+   checked by `cl /Zs /ZW` in the same CI job. It resolves LocalState and the install location
+   with WinRT, refuses a sub-2 GiB budget with the Dev Home fix, and runs the runtime on the
+   view's `Run()` thread. What it does *not* do yet is hand the CoreWindow to the renderer: that
+   waits on the SDL3 WinRT backend (step 4), which is what will own the window.
 3. **Build Dozen** (`vulkan_dzn.dll`) and `dxil.dll` for UWP. Fork of Mesa, `-Dvulkan-drivers=
    microsoft`, D3D12, DXIL 1.7. Largest single task.
 4. **Port SDL2's WinRT backend into SDL3** and build it for UWP (section 7). Largest task after
