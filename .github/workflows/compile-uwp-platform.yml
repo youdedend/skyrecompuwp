@@ -121,20 +121,6 @@ jobs:
           head -60 diag.txt
           exit 0
 
-      - name: Report diagnostics as annotations
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          PY=$(command -v python || command -v python3 || echo python)
-          $PY port/xbox-uwp/port/annotate-diagnostics.py diag.txt \
-              --root upstream --status "${{ steps.check.outputs.status }}"
-          if [ -f entry-diag.txt ]; then
-            $PY port/xbox-uwp/port/annotate-diagnostics.py entry-diag.txt \
-                --root upstream --status "${{ steps.entry.outputs.status }}"
-          fi
-          exit 0
-
       - name: Syntax check uwp_entry.cpp (MSVC /ZW)
         id: entry
         shell: bash
@@ -158,6 +144,20 @@ jobs:
           echo "cl exit: $status"
           echo "status=$status" >> "$GITHUB_OUTPUT"
           head -40 entry-diag.txt
+          exit 0
+
+      - name: Report diagnostics as annotations
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          PY=$(command -v python || command -v python3 || echo python)
+          $PY port/xbox-uwp/port/annotate-diagnostics.py diag.txt \
+              --root upstream --status "${{ steps.check.outputs.status }}"
+          if [ -f entry-diag.txt ]; then
+            $PY port/xbox-uwp/port/annotate-diagnostics.py entry-diag.txt \
+                --root upstream --status "${{ steps.entry.outputs.status }}"
+          fi
           exit 0
 
       - name: Fail if the compiler rejected the platform layer
