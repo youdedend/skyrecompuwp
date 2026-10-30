@@ -4,6 +4,12 @@ Companion to `BUILD_NOTES.md`. This is the engineering work required before an `
 
 Target: **UWP/MSIX, x64, Xbox Series X|S, Developer Mode**. Not retail, not GDK, not Xbox One (see the AVX2 note in Stage 2).
 
+> **REVISED 2026-10-30 after studying five shipping Dev Mode ports.**
+> Stage 1 below is **superseded**: the console does run Vulkan, via Mesa's **Dozen**
+> (Vulkan → D3D12) driver, and two shipped Zelda-class recompilations do exactly that. See
+> [`xbox-uwp/PORT-BLUEPRINT.md`](xbox-uwp/PORT-BLUEPRINT.md) for the evidence and the revised,
+> cheaper task list. The blockers and Stages 2–5 remain valid and are refined there.
+
 ---
 
 ## Stage 0 — Feasibility gate (half a day, must pass first)
@@ -21,7 +27,14 @@ If the memory gate fails hard, the honest output is "not portable to Dev Mode at
 
 ---
 
-## Stage 1 — D3D12 renderer (the long pole: ~4–8 engineer-weeks)
+## Stage 1 — Renderer: **SUPERSEDED**, use Mesa Dozen (~1–2 weeks)
+
+> **Do not write a D3D12 backend from scratch.** Both `Cosmo/gow3_xbox` and `JYRS20/WWHD-UWP`
+> ship `vulkan_dzn.dll` (Mesa Dozen, Vulkan-on-D3D12) plus `dxil.dll`, and run their existing
+> Vulkan renderers unchanged on the console. The original reasoning below is kept only to
+> record what it got wrong.
+
+**Original Stage 1 (kept for the record):**
 
 Replace `runtime/nvn/vulkan/` with `runtime/nvn/d3d12/` behind the existing renderer interface.
 
@@ -95,4 +108,16 @@ xbox-uwp/
 
 ## Total
 
-Realistically **8–14 engineer-weeks** for one experienced graphics/systems engineer, with Stage 1 dominating and Stage 0 allowed to stop the project. There is no shortcut: the console has no Vulkan, and the UWP sandbox has no full-trust escape hatch, so neither a wrapper nor a repackaging of the desktop build can work.
+Revised estimate: **6–10 engineer-weeks** (was 8–14). The renderer stops being the long pole;
+memory paging against the 5,120 MiB budget becomes the dominant risk instead.
+
+Two claims above are now **wrong** and corrected in `xbox-uwp/PORT-BLUEPRINT.md`:
+
+- *"the console has no Vulkan"* — it has no **native** Vulkan, but Mesa Dozen provides it over
+  D3D12, and shipped ports use it.
+- *"SDL3's UWP status is unverified"* — SDL3 has a WinRT video backend and a Windows.Gaming.Input
+  joystick path; two small patches make it work on console, pinned at the same 3.4.18 tag
+  SkyRecomp already builds.
+
+What remains true: there is no full-trust escape hatch, so a wrapper or a repackaging of the
+desktop build still cannot work.

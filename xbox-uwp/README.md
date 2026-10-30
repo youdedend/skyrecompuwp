@@ -18,7 +18,16 @@ xbox-uwp/
 └── assets/app-icon.png                # 1024x1024 icon from the upstream repo (docs/icon)
 ```
 
+## Read this before planning the port
+
+[`PORT-BLUEPRINT.md`](PORT-BLUEPRINT.md) — what the shipping Developer Mode ports
+(gow3_xbox, WWHD-UWP) actually do, and how it changes the plan. Headline: **Vulkan runs on the
+console** via Mesa Dozen (Vulkan → D3D12), so the renderer does not need rewriting.
+[`manifest/Package.appxmanifest.port.in`](manifest/Package.appxmanifest.port.in) is the manifest
+those ports use, ready for the real app.
+
 ## What the smoke test is for
+
 
 The smoke test exists so the pipeline is **provable before the port exists**. It is a
 ~200-line D3D11 C++/CX app that clears the screen to a moving colour for 15 seconds and

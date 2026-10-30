@@ -132,7 +132,18 @@ Even with all of that installed, it would still fail: mingw-w64 cannot produce a
 
 These are ordered by how fatal they are. Each is measured from the code, not guessed.
 
-**B1 — No Vulkan on Xbox. The renderer must be rewritten in D3D12.**
+**B1 — No *native* Vulkan on Xbox — but Dozen provides it (CORRECTED 2026-10-30).**
+
+> **This blocker is much smaller than first assessed.** Two shipping Developer Mode ports run
+> Vulkan on the console by bundling Mesa's **Dozen** driver (Vulkan → D3D12) as
+> `vulkan_dzn.dll`, plus `dxil.dll` from the DirectX Shader Compiler. `Cosmo/gow3_xbox` credits
+> it explicitly; `JYRS20/WWHD-UWP` (a Zelda Wii U recompilation, the closest analogue to this
+> project) renders "through Mesa Dozen / Direct3D 12". The existing renderer runs unchanged;
+> the work is integration plus per-feature fallbacks where Dozen's coverage is thin.
+> Evidence and per-file detail: [`xbox-uwp/PORT-BLUEPRINT.md`](xbox-uwp/PORT-BLUEPRINT.md).
+> Effort drops from ~4–8 weeks to ~1–2.
+
+Original assessment, kept for the record:
 `runtime/nvn/vulkan/` is 6,452 lines (`exec.c` alone 3,900) implementing the Maxwell/NVN → Vulkan 1.3 pipeline, with VMA, shaderc (runtime GLSL→SPIR-V), dynamic rendering and FSR/SMAA passes. Xbox exposes **Direct3D only**; UWP on Xbox supports D3D11 FL10.0/11.0 and D3D12 FL11.0/Shader Model 6.4, with no Agility SDK on console. There is no Vulkan ICD and no viable Vulkan-on-D3D12 shim for a 1.3-class renderer. This is a ground-up graphics backend, not a flag flip.
 
 **B2 — The AppContainer kills the runtime's process model.**
@@ -144,7 +155,15 @@ These are ordered by how fatal they are. Each is measured from the code, not gue
 **B4 — File-system model.**
 The launcher is a folder picker + free-form writer (game files folder, `mods/`, `save/`, texture packs, `skyrecomp.log`, shell-open of folders via `ShellExecute`/`xdg-open`/`open`). UWP requires `KnownFolders`/`StorageFile` brokering or `broadFileSystemAccess` (not available on Xbox). Roughly 15 GB of user-supplied assets have to become package content or a brokered library folder.
 
-**B5 — SDL3 under UWP is unproven for this version.**
+**B5 — SDL3 under UWP: proven (CORRECTED 2026-10-30).**
+
+> SDL3 has a WinRT video backend and a Windows.Gaming.Input joystick path. `WWHD-UWP` builds
+> SDL3 for UWP with MSVC and imports it, pinning the **same `release-3.4.18` tag** this repo
+> already uses, with two small patches: a `SDL_PixelFormat` return type, and the WGI raw button
+> layout (`nbuttons = 14`) that Xbox controllers require. Both transplant directly.
+> Detail: [`xbox-uwp/PORT-BLUEPRINT.md`](xbox-uwp/PORT-BLUEPRINT.md) §6.
+
+Original assessment, kept for the record:
 The repo pins SDL3 `release-3.4.18`. SDL2 had a WinRT/UWP backend; SDL3's status for AppContainer/Xbox has to be verified per release (there is no in-repo evidence either way, and the repo only builds SDL3 for Win32/MSYS2, Linux and macOS). Audio also moves from WASAPI desktop paths to the UWP-legal surface.
 
 **B6 — Undocumented Windows build.**
@@ -234,7 +253,9 @@ signtool verify /pa /all /v .\pkg\*.msix
 
 ## 7. What would have to happen to actually produce `xbox-uwp.zip`
 
-See `XBOX-UWP-PORT-PLAN.md` in this repo for the file-by-file work breakdown. Short version: this is a **port project measured in weeks**, not a build. The critical path is a D3D12 backend for `runtime/nvn/` (replacing 6.4k lines of Vulkan), a UWP platform layer replacing `runtime/platform/windows.c`, a pre-baked (no runtime compiler) game-library flow, a memory budget that fits 5,120 MiB, and MSIX packaging + signing — all on a Windows 11 host with VS 2022 and the Windows SDK.
+See [`xbox-uwp/PORT-BLUEPRINT.md`](xbox-uwp/PORT-BLUEPRINT.md) for the researched blueprint
+(build system, Dozen, SDL3 patches, storage paths, memory paging, signing, CI) and
+`XBOX-UWP-PORT-PLAN.md` for the staged plan. Revised estimate: 6–10 engineer-weeks. Short version: this is a **port project measured in weeks**, not a build. The critical path is a D3D12 backend for `runtime/nvn/` (replacing 6.4k lines of Vulkan), a UWP platform layer replacing `runtime/platform/windows.c`, a pre-baked (no runtime compiler) game-library flow, a memory budget that fits 5,120 MiB, and MSIX packaging + signing — all on a Windows 11 host with VS 2022 and the Windows SDK.
 
 ## 8. What was decided and built
 
