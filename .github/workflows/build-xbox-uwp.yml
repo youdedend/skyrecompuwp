@@ -206,6 +206,8 @@ jobs:
                   -Executable   'SkyRecompUwpSmoke.exe' `
                   -EntryPoint   'SkyRecompUwpSmoke.App' `
                   -Version      '1.0.0.0' `
+                  -IconSource   'xbox-uwp\assets\app-icon.png' `
+                  -IconLabel    'SR' `
                   -ArtifactName 'game-test' `
                   -OutputDir    $out `
                   -GameDir      $game `
