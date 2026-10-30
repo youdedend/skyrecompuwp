@@ -29,6 +29,11 @@
 
 namespace SkyRecompUwpSmoke {
 
+    // Seconds of animation before the app exits by itself, so a console session can never
+    // end up stuck in a window that needs a hard power cycle.
+    constexpr double kAutoExitSeconds = 15.0;
+
+
     // Furthest stage reached. Also selects the clear colour.
     enum class Stage
     {

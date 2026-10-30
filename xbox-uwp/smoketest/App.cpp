@@ -26,7 +26,7 @@ using namespace SkyRecompUwpSmoke;
 
 namespace {
 
-    char g_logPath[MAX_PATH] = { 0 };
+    wchar_t g_logPath[MAX_PATH] = { 0 };
     bool g_logPathValid = false;
     LARGE_INTEGER g_qpcFreq = { 0 };
     LARGE_INTEGER g_qpcStart = { 0 };
@@ -57,9 +57,9 @@ namespace {
                 const wchar_t* p = reinterpret_cast<const wchar_t*>(folder->Data());
                 if (wcslen(p) < (MAX_PATH - 16))
                 {
-                    wcscpy_s(g_logPath, MAX_PATH, "\\\\?\\");
+                    wcscpy_s(g_logPath, MAX_PATH, L"\\\\?\\");
                     wcscat_s(g_logPath, MAX_PATH, p);
-                    wcscat_s(g_logPath, MAX_PATH, "\\smoke.log");
+                    wcscat_s(g_logPath, MAX_PATH, L"\\smoke.log");
                     g_logPathValid = true;
                 }
             }
@@ -80,9 +80,7 @@ namespace {
         OutputDebugStringA(out);
 
         if (!g_logPathValid) { return; }
-        wchar_t wide[MAX_PATH];
-        MultiByteToWideChar(CP_UTF8, 0, g_logPath, -1, wide, MAX_PATH);
-        HANDLE h = CreateFile2(wide, FILE_APPEND_DATA, FILE_SHARE_READ, OPEN_ALWAYS, nullptr);
+        HANDLE h = CreateFile2(g_logPath, FILE_APPEND_DATA, FILE_SHARE_READ, OPEN_ALWAYS, nullptr);
         if (h != INVALID_HANDLE_VALUE)
         {
             DWORD written = 0;
@@ -145,7 +143,7 @@ void App::Initialize(CoreApplicationView^ applicationView)
             LogInit();
             m_logReady = true;
             Log("=== SkyRecomp UWP smoke %s ===", "0.2.0");
-            Log("log: %s", g_logPathValid ? g_logPath : "(no path - logging disabled)");
+            Log("log: %ls", g_logPathValid ? g_logPath : L"(no path - logging disabled)");
         }
 
         applicationView->Activated +=
@@ -529,7 +527,7 @@ int __cdecl main(Platform::Array<Platform::String^>^ /*argv*/)
     // Log before anything else can fail, so even an early death leaves a file behind.
     LogInit();
     Log("=== SkyRecomp UWP smoke 0.2.0 main() ===");
-    Log("log: %s", g_logPathValid ? g_logPath : "(no path - logging disabled)");
+    Log("log: %ls", g_logPathValid ? g_logPath : L"(no path - logging disabled)");
 
     auto source = ref new AppSource();
     Log("AppSource created, calling CoreApplication::Run");
