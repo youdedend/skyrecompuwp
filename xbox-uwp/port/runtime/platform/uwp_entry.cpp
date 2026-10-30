@@ -93,33 +93,28 @@ void flush_logs() {
 void register_lifetime_handlers() {
     using namespace Windows::ApplicationModel::Core;
 
-    // Fires on the UI thread for an exception that reached the top of a message. It does not fire
-    // for a fail-fast (access violation, stack overflow) - nothing in user mode does - so this is
-    // diagnostic coverage, not a safety net.
-    CoreApplication::UnhandledException +=
-        ref new UnhandledExceptionEventHandler([](Platform::Object ^, UnhandledExceptionEventArgs ^ e) {
-            wchar_t line[512];
-            const wchar_t *msg = e->Message ? e->Message->Data() : L"(no message)";
-            HRESULT hr = e->Exception ? e->Exception->HResult : E_FAIL;
-            swprintf_s(line, L"UNHANDLED %s (0x%08X)", msg, static_cast<unsigned>(hr));
-            entry_log(line);
-            flush_logs();
-            e->Handled = false;  // let the app model do what it would have done anyway
-        });
-
-    // The async half: an IAsyncAction or IAsyncOperation completed with an error that nobody
-    // observed. This is where an out-of-memory in the renderer's setup would surface.
+    // The CoreApplication app model's only unhandled-error surface: there is no
+    // Application::UnhandledException here - that is the XAML app model, which this is not, and
+    // reaching for it is what the first version of this file did.
+    //
+    // An error reaches this event only if nothing observed it. Propagate() rethrows it so it can be
+    // logged with its message and HRESULT; the alternative, leaving it unhandled, terminates the
+    // process without a word, which is the situation this whole file exists to avoid.
     CoreApplication::UnhandledErrorDetected +=
-        ref new UnhandledErrorDetectedEventHandler([](Platform::Object ^, UnhandledErrorDetectedEventArgs ^ e) {
-            try {
-                const wchar_t *msg = e->UnhandledError->Message ? e->UnhandledError->Message->Data() : L"(no message)";
-                std::wstring line(L"UNHANDLED ASYNC ");
-                line += msg;
-                entry_log(line.c_str());
+        ref new Windows::Foundation::EventHandler<UnhandledErrorDetectedEventArgs ^>(
+            [](Platform::Object ^, UnhandledErrorDetectedEventArgs ^ e) {
+                try {
+                    if (!e->UnhandledError->Handled) e->UnhandledError->Propagate();
+                } catch (Platform::Exception ^ ex) {
+                    wchar_t line[512];
+                    const wchar_t *msg = ex->Message ? ex->Message->Data() : L"(no message)";
+                    swprintf_s(line, L"UNHANDLED %s (0x%08X)", msg, static_cast<unsigned>(ex->HResult));
+                    entry_log(line);
+                } catch (...) {
+                    entry_log(L"UNHANDLED and not even a Platform::Exception");
+                }
                 flush_logs();
-            } catch (...) {
-            }
-        });
+            });
 
     // On Xbox the app is suspended when the user returns to the dashboard, and there is a short
     // budget to finish up. Nothing here needs to save yet (the runtime's saves are its own), but
