@@ -288,6 +288,52 @@ jobs:
           grep -v 'unused during compilation' wall-diag.txt | tail -40
           echo "status=$status" >> "$GITHUB_OUTPUT"
 
+      - name: Compile the whole runtime (build report)
+        id: sweep
+        shell: bash
+        run: |
+          # The wall step compiles a chosen dozen; this compiles everything the CMake project lists,
+          # so the answer to "does the port build?" is a number in the build log rather than an
+          # opinion. Nothing here is linker-complete - the four UWP libraries (Dozen, SDL3, FFmpeg,
+          # shaderc) are still missing - but every translation unit that can be compiled is.
+          #
+          # runtime/ui/*.mm is excluded: those are Objective-C++ translation units that the CMake
+          # project compiles with -x c++ and that no mingw-targeted pass can parse.
+          set +e
+          dep="$PWD"
+          : > sweep.txt
+          ok=0; bad=0; ffmpeg_blocked=""
+          list=$( cd upstream && ls runtime/*.c runtime/hle/*.c runtime/nvn/*.c runtime/nvn/maxwell/*.c runtime/nvn/vulkan/*.c 2>/dev/null | grep -v -E 'platform/(linux|macos|windows)\.c' )
+          for f in $list; do
+            ( cd upstream && python -m ziglang cc \
+                -target x86_64-windows-gnu -std=gnu11 -c -o "$dep/sweep.o" \
+                -DSKYRECOMP_UWP=1 -DWINAPI_FAMILY=WINAPI_FAMILY_APP -D_CRT_APP \
+                -D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -O0 -Wno-unused-command-line-argument \
+                -Iruntime/platform/uwp_posix -Iruntime -Iruntime/nvn -Iruntime/nvn/vulkan \
+                -I"$dep/inc" -Ithird_party/smaa/Textures \
+                -I"$dep/vkheaders/include" -I"$dep/sdl3/include" -I"$dep/vma/include" \
+                -I"$dep/shaderc/libshaderc/include" \
+                "$f" ) > sweep-one.txt 2>&1
+            if [ $? -eq 0 ]; then
+              echo "OK   $f" >> sweep.txt; ok=$((ok+1))
+            else
+              echo "FAIL $f" >> sweep.txt
+              grep -m3 'error:' sweep-one.txt | sed 's/^/       /' >> sweep.txt
+              bad=$((bad+1))
+              # FFmpeg is a declared build dependency (BUILD-PORT.md step 3), so its absence is the
+              # one failure this report is allowed to explain rather than be red about.
+              [ "$f" = "runtime/hle/movie.c" ] && ffmpeg_blocked="$f"
+            fi
+          done
+          { echo "----"; echo "compiled: $ok    failed: $bad"; } >> sweep.txt
+          tail -20 sweep.txt
+          expected=0
+          [ -n "$ffmpeg_blocked" ] && expected=1
+          if [ "$bad" -eq "$expected" ]; then st=0; else st=1; fi
+          echo "status=$st" >> "$GITHUB_OUTPUT"
+          echo "compiled=$ok" >> "$GITHUB_OUTPUT"
+          echo "failed=$bad" >> "$GITHUB_OUTPUT"
+
       - name: Report diagnostics as annotations
         if: always()
         shell: bash
@@ -330,6 +376,10 @@ jobs:
             echo "::error::the runtime does not compile against the UWP POSIX shims (see annotations)"
             fail=1
           fi
+          if [ "${{ steps.sweep.outputs.status }}" != "0" ]; then
+            echo "::error::a translation unit stopped compiling for the console: ${{ steps.sweep.outputs.failed }} failed, ${{ steps.sweep.outputs.compiled }} passed (see the build report artifact)"
+            fail=1
+          fi
           [ "$fail" = "0" ] || exit 1
           echo "uwp.c, uwp_entry.cpp, the patched device.c and the POSIX shims' consumers all compile"
 
@@ -337,11 +387,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: uwp-compile-diagnostics
+          name: uwp-build-report
           path: |
             diag.txt
             entry-diag.txt
             renderer-diag.txt
             wall-diag.txt
+            sweep.txt
           if-no-files-found: ignore
           retention-days: 14
