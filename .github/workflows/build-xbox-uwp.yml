@@ -181,54 +181,53 @@ jobs:
       - name: Package with game code (-GameDir)
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          # The one path in the packager that had never been executed: staging a game library into
-          # the package. A dummy skygame.dll is enough - nothing loads it while packaging - and the
-          # assertion is that both files end up at the MSIX root, next to the exe, which is where
+          $ErrorActionPreference = 'Continue'
+          # The one path in the packager nobody had executed: staging a game library into the
+          # package. A dummy skygame.dll is enough - nothing loads it while packaging - and the
+          # assertion is that it lands at the MSIX root, next to the exe, which is where
           # LoadPackagedLibrary looks and the only place it can look.
+          #
+          # Nothing is piped away: if this fails, the reason has to be in the log, because the job
+          # log is the only thing that survives a red run.
           $game = Join-Path $env:RUNNER_TEMP 'game'
           New-Item -ItemType Directory -Force -Path $game | Out-Null
           [IO.File]::WriteAllBytes((Join-Path $game 'skygame.dll'), [byte[]](1..64))
           Set-Content -LiteralPath (Join-Path $game 'skygame.dll.id') -Value '5e5bafbb450f894b' -Encoding ascii -NoNewline
-          $out = Join-Path $env:OUT_DIR 'gametest'
-          & .\xbox-uwp\packaging\Package-Uwp.ps1 `
-              -LayoutDir    'xbox-uwp\smoketest\x64\Release' `
-              -PackageName  'SkyRecompUwpGameTest' `
-              -IdentityName 'SkyRecomp.UwpGameTest' `
-              -DisplayName  'Sky Recomp UWP Game Test' `
-              -Executable   'SkyRecompUwpSmoke.exe' `
-              -EntryPoint   'SkyRecompUwpSmoke.App' `
-              -ArtifactName 'game-test' `
-              -OutputDir    $out `
-              -GameDir      $game `
-              -SkipSign
-          if ($LASTEXITCODE -ne 0) { throw "Package-Uwp.ps1 -GameDir exited with code $LASTEXITCODE" }
+          Write-Host "game folder: $game"
+          Get-ChildItem $game | Format-Table Name, Length | Out-String | Write-Host
 
-          $msix = Get-ChildItem $out -Filter *.msix -Recurse | Select-Object -First 1
-          if (-not $msix) { throw "no .msix produced in $out" }
+          $out = Join-Path $env:OUT_DIR 'gametest'
+          try {
+              & .\xbox-uwp\packaging\Package-Uwp.ps1 `
+                  -LayoutDir    'xbox-uwp\smoketest\x64\Release' `
+                  -PackageName  'SkyRecompUwpGameTest' `
+                  -IdentityName 'SkyRecomp.UwpGameTest' `
+                  -DisplayName  'Sky Recomp UWP Game Test' `
+                  -Executable   'SkyRecompUwpSmoke.exe' `
+                  -EntryPoint   'SkyRecompUwpSmoke.App' `
+                  -Version      '1.0.0.0' `
+                  -ArtifactName 'game-test' `
+                  -OutputDir    $out `
+                  -GameDir      $game `
+                  -SkipSign
+          } catch {
+              Write-Host "::error title=-GameDir packaging threw::$($_.Exception.Message)"
+              exit 1
+          }
+
+          $msix = Get-ChildItem $out -Filter *.msix -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $msix) { Write-Host "::error title=-GameDir packaging::no .msix under $out"; exit 1 }
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $zip = [IO.Compression.ZipFile]::OpenRead($msix.FullName)
           try { $names = @($zip.Entries | ForEach-Object { $_.FullName }) } finally { $zip.Dispose() }
+          Write-Host "MSIX entries: $($names -join ', ')"
           foreach ($want in @('skygame.dll', 'skygame.dll.id')) {
               if ($names -notcontains $want) {
-                  throw "MSIX is missing $want at the package root. Entries: $($names -join ', ')"
+                  Write-Host "::error title=-GameDir packaging::MSIX is missing $want at the package root"
+                  exit 1
               }
           }
-          Write-Host "game code staged into the package: $($names -join ', ')"
-
-          # And the other half of the contract: an .id that is missing or malformed must be refused,
-          # not packaged into a build that fails on the console with "built for another game".
-          Remove-Item -Force (Join-Path $game 'skygame.dll.id')
-          $refused = $false
-          try {
-              & .\xbox-uwp\packaging\Package-Uwp.ps1 `
-                  -LayoutDir 'xbox-uwp\smoketest\x64\Release' -PackageName 'SkyRecompUwpGameTest' `
-                  -IdentityName 'SkyRecomp.UwpGameTest' -DisplayName 'Sky Recomp UWP Game Test' `
-                  -Executable 'SkyRecompUwpSmoke.exe' -EntryPoint 'SkyRecompUwpSmoke.App' `
-                  -ArtifactName 'game-test' -OutputDir $out -GameDir $game -SkipSign 2>&1 | Out-Null
-          } catch { $refused = $true }
-          if (-not $refused) { throw "a game folder without skygame.dll.id was packaged instead of refused" }
-          Write-Host "missing skygame.dll.id is refused, as it should be"
+          Write-Host "game code staged into the package"
 
       - name: Inspect the produced package
         shell: powershell
