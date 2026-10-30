@@ -85,7 +85,26 @@ The runtime job (`xbox-uwp.zip`) is disabled unless the repository variable
 `ENABLE_UWP_RUNTIME_BUILD` is `true`, and its first step fails fast if `PortBlocked.cpp` is
 still present — so enabling the variable can never silently produce a broken package.
 
+## Download a ready-made package (Release)
+
+**[v0.1.1 — Xbox UWP smoke package](https://github.com/youdedend/skyrecompuwp/releases/tag/v0.1.1)** (pre-release)
+
+| Asset | Size |
+|---|---|
+| [`xbox-uwp-smoketest.zip`](https://github.com/youdedend/skyrecompuwp/releases/download/v0.1.1/xbox-uwp-smoketest.zip) | 1,083,058 bytes |
+| [`SkyRecompUwpSmoke.cer`](https://github.com/youdedend/skyrecompuwp/releases/download/v0.1.1/SkyRecompUwpSmoke.cer) | 786 bytes |
+
+SHA256 of the zip: `c51d30fb516866cb94db57cad7381db6a0f684f67b3ab0ec2844d99b69d4c1f7`
+(also inside the zip as `SHA256SUMS.txt`).
+
+Published by `.github/workflows/release-xbox-uwp.yml`, which builds, signs, **installs** the
+package on the runner (`Add-AppxPackage`, asserted `Status = Ok`) and only then uploads it.
+Cut a new release with `git push origin vX.Y.Z`, or run the workflow manually with a tag.
+
+The release asset is the **smoke test**, not the game. See the release notes.
+
 ## Deploy to the console
+
 
 1. **Console**: install *Xbox Dev Mode* from the Store, activate it at
    `https://partner.microsoft.com/xboxconfig`, restart into Developer Mode.
