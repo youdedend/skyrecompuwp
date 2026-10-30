@@ -5,8 +5,8 @@ Commands and their output are in [`../../audit/commands.log`](../../audit/comman
 they were run; the rest are reproduced inline below so each number can be re-derived.
 
 The runtime and tools are **149 source files / 39,322 lines**. The port is not a rewrite of that:
-it is one replaced file, four small patches, and two design changes that no amount of patching
-removes.
+it is one replaced file, a five-part patch set, a compatibility header, and two design changes
+that no amount of patching removes.
 
 | # | What | Kind | Status |
 |---|------|------|--------|
@@ -15,11 +15,12 @@ removes.
 | 3 | `gamebuild.c` — no on-console compiler | 7-line patch | written, applies cleanly |
 | 4 | `mods.c` — no shell folder-open | 6-line patch | written, applies cleanly |
 | 5 | `main.c` — no re-exec on collision | 10-line patch | written, applies cleanly |
-| 6 | Game code must live **inside the package** | design change | analysed, not built |
-| 7 | User files reachable only through brokering | design change | analysed, not built |
-| 8 | Mesa Dozen + `dxil.dll` | dependency to build | analysed, not built |
-| 9 | SDL3 + SDL2's WinRT backend ported in | dependency to build | analysed, not built |
-| 10 | C++/CX activation host, CMake project | new files | CMake written; host **not written** |
+| 6 | `uwp_compat.h` — POSIX names on UCRT | new file + 1-line `platform.h` patch | written, **never compiled** |
+| 7 | Game code must live **inside the package** | design change | analysed, not built |
+| 8 | User files reachable only through brokering | design change | analysed, not built |
+| 9 | Mesa Dozen + `dxil.dll` | dependency to build | analysed, not built |
+| 10 | SDL3 + SDL2's WinRT backend ported in | dependency to build | analysed, not built |
+| 11 | Entry host, CMake project, CI compile gate | new files | CMake + gate written; host **not written** |
 
 ---
 
