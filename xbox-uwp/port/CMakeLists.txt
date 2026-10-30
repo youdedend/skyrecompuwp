@@ -93,6 +93,21 @@ if(NOT EXISTS "${SKY_UWP_ENTRY}")
     message(FATAL_ERROR "Missing ${SKY_UWP_ENTRY} - the activatable class the manifest names.")
 endif()
 
+# runtime/nvn/smaa_data.c #includes the SMAA reference shader as a C string, from a generated
+# header. The Makefile builds that with tr and sed; a Windows build host has neither, so the same
+# four transformations are in tools/gen-smaa-inc.py and are verified byte-identical to the
+# Makefile's output. Without this line the build fails on a missing smaa_hlsl.inc, which is how
+# this was found - by compiling every translation unit the project lists.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(SKY_SMAA_INC "${CMAKE_CURRENT_BINARY_DIR}/inc/smaa_hlsl.inc")
+add_custom_command(OUTPUT "${SKY_SMAA_INC}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/inc"
+    COMMAND Python3::Interpreter "${CMAKE_CURRENT_LIST_DIR}/tools/gen-smaa-inc.py"
+            "${SKY_ROOT}/third_party/smaa/SMAA.hlsl" "${SKY_SMAA_INC}"
+    DEPENDS "${SKY_ROOT}/third_party/smaa/SMAA.hlsl"
+    COMMENT "Embedding third_party/smaa/SMAA.hlsl as a C string"
+    VERBATIM)
+
 add_executable(skyrecomp_uwp WIN32
     ${SKY_RUNTIME_SRC} ${SKY_HLE_SRC} ${SKY_NVN_SRC} ${SKY_MAXWELL_SRC}
     ${SKY_VULKAN_SRC} ${SKY_UI_SRC}
@@ -130,6 +145,9 @@ set_source_files_properties("${SKY_ROOT}/runtime/main.c" PROPERTIES
 # the exe as long as both are written to the same place.
 target_link_options(skyrecomp_uwp PRIVATE /WINMD)
 
+add_custom_target(sky_smaa_inc DEPENDS "${SKY_SMAA_INC}")
+add_dependencies(skyrecomp_uwp sky_smaa_inc)
+
 set_source_files_properties(${SKY_UI_SRC} PROPERTIES LANGUAGE CXX)
 
 # The POSIX headers MSVC does not have (<pthread.h>, <dirent.h>, <unistd.h>, <strings.h>,
@@ -139,10 +157,13 @@ set_source_files_properties(${SKY_UI_SRC} PROPERTIES LANGUAGE CXX)
 # as upstream wrote it, and the shim is a layer the port owns.
 target_include_directories(skyrecomp_uwp PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}/runtime/platform/uwp_posix"
+    "${CMAKE_CURRENT_BINARY_DIR}/inc"          # smaa_hlsl.inc, generated above
+    "${SKY_ROOT}/third_party/smaa/Textures"    # AreaTex.h / SearchTex.h, included by smaa_data.c
     "${SKY_ROOT}/runtime" "${SKY_ROOT}/runtime/nvn"
     "${SKY_ROOT}/third_party/imgui" "${SKY_ROOT}/third_party/imgui/backends"
     "${SKY_SDL3_SOURCE}/include"
-    "${SKY_FFMPEG_ROOT}/include")
+    "${SKY_FFMPEG_ROOT}/include"
+    "${SKY_SHADERC_ROOT}/libshaderc/include")   # <shaderc/shaderc.h>, the only header used
 
 # ---- link ------------------------------------------------------------------------------
 # Store CRT import libraries FIRST: the UWP variants of the CRT are what windowsapp.lib
