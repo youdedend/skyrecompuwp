@@ -33,6 +33,11 @@ on:
 permissions:
   contents: read
 
+# One build per ref: a new push supersedes an older run instead of queueing behind it.
+concurrency:
+  group: xbox-uwp-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   # Keep every build in one predictable place, same name as the local convention.
   OUT_DIR: build-xbox-uwp
@@ -123,21 +128,20 @@ jobs:
         shell: powershell
         run: |
           # signtool verify /pa validates the Authenticode chain, so a self-signed cert fails
-          # with "terminated in a root certificate which is not trusted" on a clean machine.
-          # This runner is thrown away after the job, and the certificate is generated in the
-          # previous step, so trusting it here only affects this build. Nothing is exported
-          # to the artifact beyond the public .cer the console needs anyway.
+          # with "terminated in a root certificate which is not trusted".
+          # NOTE: do NOT use X509Store.Add for the Root store here - on a headless runner it
+          # raises a blocking confirmation dialog and the job hangs until timeout.
+          # certutil -addstore -f is the non-interactive equivalent.
+          # The runner is discarded after the job and the certificate was generated minutes
+          # ago in this same job, so this only affects this build.
           $ErrorActionPreference = 'Stop'
           $cer = Join-Path $env:OUT_DIR 'SkyRecompUwp.cer'
           if (-not (Test-Path $cer)) { throw "Expected certificate not found: $cer" }
-          $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $cer
-          foreach ($name in @('TrustedPeople', 'Root')) {
-              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store($name, 'CurrentUser')
-              $store.Open('ReadWrite')
-              $store.Add($cert)
-              $store.Close()
-              Write-Host "trusted in CurrentUser\$name : $($cert.Subject)"
-          }
+          & certutil.exe -addstore -f Root $cer
+          if ($LASTEXITCODE -ne 0) { throw "certutil -addstore Root failed with exit code $LASTEXITCODE" }
+          & certutil.exe -addstore -f TrustedPeople $cer
+          if ($LASTEXITCODE -ne 0) { throw "certutil -addstore TrustedPeople failed with exit code $LASTEXITCODE" }
+          Write-Host "certificate trusted for this build only."
 
       - name: Package (makeappx + signtool + zip)
         shell: powershell
