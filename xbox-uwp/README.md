@@ -103,7 +103,15 @@ Cut a new release with `git push origin vX.Y.Z`, or run the workflow manually wi
 
 The release asset is the **smoke test**, not the game. See the release notes.
 
+## If it installs but crashes immediately
+
+See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md). Short version: v0.1.1 was missing the linker's
+`/WINMD` activation metadata, and it never wrote a log — so an empty `LocalState` was expected,
+not informative. v0.2.0 fixes both and writes `<LocalState>\smoke.log`, with a screen colour
+that encodes the stage reached.
+
 ## Deploy to the console
+
 
 
 1. **Console**: install *Xbox Dev Mode* from the Store, activate it at
