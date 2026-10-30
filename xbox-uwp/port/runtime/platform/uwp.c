@@ -319,6 +319,15 @@ static void require_cpu(void) {
 
 void plat_init(void) {
     log_to_local_state();
+
+    // Where the runtime keeps game files, saves and seeds. runtime/paths.c reads
+    // LARECOMP_DATA_ROOT first, and only then falls back to the directory next to the exe - which
+    // inside a package is C:\Program Files\WindowsApps\<package>, read-only. Without this the
+    // first thing the game does is try to mkdir there, fail its own writability check and exit with
+    // the desktop message about moving the folder out of Program Files. LocalState is the folder the
+    // app may write and the Device Portal can show, so that is the data root.
+    setenv("LARECOMP_DATA_ROOT", g_local_state, 1);
+
     require_cpu();
     // No console, no timeBeginPeriod, no SetProcessInformation, no SetConsoleOutputCP in UWP:
     // precise waits use the high-resolution waitable timer in plat_sleep_until_ns instead.
