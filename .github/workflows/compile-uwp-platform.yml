@@ -79,10 +79,14 @@ jobs:
         id: check
         shell: bash
         run: |
-          set -uo pipefail
-          # /fsyntax-only: parse and type-check in UWP configuration, produce no object.
-          # The defines are the same set CMakeLists.txt uses for the real build, so this checks
-          # the configuration that matters rather than a desktop approximation of it.
+          # GitHub runs bash with -e -o pipefail. A failing compiler must not abort the step
+          # before the diagnostics are parsed, or the only trace is "exit code 1".
+          set +e
+          PY=$(command -v python || command -v python3 || echo python)
+          echo "python: $PY"
+          # /fsyntax-only: parse and type-check in the UWP configuration, produce no object.
+          # The defines are the same set CMakeLists.txt uses, so this checks the configuration
+          # that matters rather than a desktop approximation of it.
           clang-cl /nologo /fsyntax-only /W3 \
             /DWINAPI_FAMILY=WINAPI_FAMILY_APP \
             /D_CRT_APP \
@@ -92,45 +96,22 @@ jobs:
             /DWIN32_LEAN_AND_MEAN \
             /D_AMD64_ /D_WIN64 \
             /I upstream/runtime \
-            upstream/runtime/platform/uwp.c 2>&1 | tee diag.txt
-          status=${PIPESTATUS[0]}
+            upstream/runtime/platform/uwp.c > diag.txt 2>&1
+          status=$?
           echo "clang-cl exit: $status"
           echo "status=$status" >> "$GITHUB_OUTPUT"
+          cat diag.txt
           exit 0
 
       - name: Report diagnostics as annotations
         if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          # Job logs are not readable from where this project is developed; annotations are.
-          # C:\...\file(12,5): error: text  ->  ::error file=file,line=12,col=5::text
-          python - <<'PY'
-          import os, re, sys
-          if not os.path.exists("diag.txt"):
-              print("::warning::no compiler output captured")
-              sys.exit(0)
-          text = open("diag.txt", encoding="utf-8", errors="replace").read()
-          # Strip the runner's absolute prefix so the annotation points into the repo.
-          root = os.path.abspath("upstream")
-          pattern = re.compile(r"^(.*?)\((\d+),(\d+)\):\s*(error|warning|note):\s*(.*)$", re.M)
-          n_err = n_warn = 0
-          for m in pattern.finditer(text):
-              path, line, col, sev, msg = m.groups()
-              path = os.path.abspath(path).replace(os.sep, "/")
-              root_slash = root.replace(os.sep, "/")
-              path = path[len(root_slash) + 1:] if path.startswith(root_slash + "/") else path
-              msg = msg.replace("%", "%25").replace("\r", "").replace("\n", " ")
-              if sev == "error":
-                  n_err += 1
-                  print(f"::error file=upstream/{path},line={line},col={col}::{msg}")
-              elif sev == "warning":
-                  n_warn += 1
-                  print(f"::warning file=upstream/{path},line={line},col={col}::{msg}")
-          print(f"parsed: {n_err} errors, {n_warn} warnings")
-          if "no matching" in text or "command not found" in text:
-              print("::error::clang-cl not available in the environment")
-          PY
+          set +e
+          PY=$(command -v python || command -v python3 || echo python)
+          $PY port/xbox-uwp/port/annotate-diagnostics.py diag.txt \
+              --root upstream --status "${{ steps.check.outputs.status }}"
+          exit 0
 
       - name: Fail if the compiler rejected the platform layer
         shell: bash
