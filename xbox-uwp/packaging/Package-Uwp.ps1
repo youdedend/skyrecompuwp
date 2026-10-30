@@ -403,6 +403,49 @@ Identity
 "@
 Set-Content -LiteralPath (Join-Path $zipDir "INSTALL.md") -Value $install -Encoding UTF8
 
+# ---------------------------------------------------------------- build log
+# Every zipped artifact carries the log of how it was built: what was packaged, with which tools,
+# and which hashes came out. Not a transcript - a transcript would record the command line,
+# including the certificate password - but the facts somebody needs when a package behaves
+# differently on their console than it did here.
+$buildLog = Join-Path $zipDir "BUILD-LOG.txt"
+$stagedFiles = Get-ChildItem -Path $stage -File -Recurse | ForEach-Object {
+    "  {0,-40} {1,10} bytes" -f $_.Name, $_.Length
+}
+$log = @(
+    "$DisplayName - build log",
+    "",
+    "built      : $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss K')",
+    "host       : $env:COMPUTERNAME  $([System.Environment]::OSVersion.VersionString)",
+    "powershell : $($PSVersionTable.PSVersion)",
+    "",
+    "package",
+    "  name      : $PackageName",
+    "  identity  : $IdentityName",
+    "  publisher : $Publisher",
+    "  version   : $Version",
+    "  arch      : x64",
+    "  entry     : $EntryPoint",
+    "",
+    "game code",
+    $(if ($hasGameCode) { "  included  : skygame.dll, id $gameId" } else { "  included  : NO - this is a smoke-test package" }),
+    "",
+    "tools",
+    "  makeappx  : $makeappx",
+    "  signtool  : $signtool",
+    "  makepri   : $makepri",
+    "",
+    "staged payload ($($stagedFiles.Count) files)",
+    ($stagedFiles -join [Environment]::NewLine),
+    "",
+    "output",
+    "  msix      : $msixName",
+    "  signed    : $(if ($cerOut) { 'yes, self-signed dev certificate' } else { 'NO (-SkipSign)' })",
+    "  sha256    : $((Get-FileHash -Algorithm SHA256 -LiteralPath $msixPath).Hash.ToLower())"
+)
+Set-Content -LiteralPath $buildLog -Value ($log -join [Environment]::NewLine) -Encoding UTF8
+Write-Host "build log: $buildLog"
+
 $files = Get-ChildItem -Path $zipDir -File -Recurse
 $lines = foreach ($f in $files) {
     $h = (Get-FileHash -Algorithm SHA256 -LiteralPath $f.FullName).Hash.ToLower()
